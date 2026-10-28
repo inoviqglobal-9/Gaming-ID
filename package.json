@@ -1,0 +1,29 @@
+{
+  "name": "secure-scanner-trader-suite",
+  "version": "1.0.0",
+  "description": "Enterprise Secure Private Scanner & Trader Panel (MERN Stack)",
+  "scripts": {
+    "bootstrap:admin": "npm --prefix backend run bootstrap:admin",
+    "backend:dev": "npm --prefix backend run dev",
+    "backend:start": "npm --prefix backend start",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build"
+  },
+  "keywords": [
+    "mern",
+    "fichaspot",
+    "scanner",
+    "trader",
+    "crypto",
+    "payin",
+    "payout",
+    "security"
+  ],
+  "config": {
+    "mongodbMemoryServer": {
+      "version": "6.0.14"
+    }
+  },
+  "author": "",
+  "license": "ISC"
+}

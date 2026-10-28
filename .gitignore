@@ -1,0 +1,116 @@
+
+# ========================================
+# RISEPAY SOLUTION - GITIGNORE
+# MERN STACK PROJECT
+# ========================================
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+**/.env
+**/.env.*
+!**/.env.example
+
+# Node Modules
+node_modules/
+**/node_modules/
+
+# NPM and Yarn Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Production Builds
+dist/
+build/
+**/dist/
+**/build/
+
+# Uploads and Temporary Files
+uploads/
+**/uploads/
+!uploads/.gitkeep
+!**/uploads/.gitkeep
+
+scratch/
+tmp/
+temp/
+
+# Test and Coverage Files
+coverage/
+.nyc_output/
+
+# IDE and OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Cache
+.cache/
+.vite/
+*.tsbuildinfo
+
+# Local Logs
+*.log
+
+# Sensitive Files
+*.pem
+*.key
+*.p12
+*.pfx
+```
+  
+## 2. Aapke project ka structure
+
+```text
+GAMING SITE/
+│
+├── backend/
+│   ├── src/
+│   ├── .env           (GitHub par nahi jayegi)
+│   ├── node_modules/  (GitHub par nahi jayega)
+│   └── package.json
+│
+├── frontend/
+│   ├── src/
+│   ├── .env           (GitHub par nahi jayegi)
+│   ├── node_modules/  (GitHub par nahi jayega)
+│   └── package.json
+│
+├── .gitignore
+├── package.json
+└── README.md
+```
+
+## 3. GitHub par upload karne ki commands
+
+VS Code Terminal mein project ke root folder se yeh commands run karo:
+
+<CodeBlock language="powershell" editable>
+# Check repository
+git status
+
+# Initialize only if Git is not initialized
+git init
+
+# Set main branch
+git branch -M main
+
+# Add all allowed project files
+git add .
+
+# Check staged files
+git status
+
+# Create commit
+git commit -m "Initial RisePay Solution MERN Project"
+
+# Connect GitHub repository
+git remote add origin https://github.com/YOUR_USERNAME/risepay-solution.git
+
+# Upload to GitHub
+git push -u origin main
