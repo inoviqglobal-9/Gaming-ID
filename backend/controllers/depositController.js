@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const crypto = require('crypto');
 const DepositRequest = require('../models/DepositRequest');
 const DepositConfig = require('../models/DepositConfig');
@@ -5,10 +6,15 @@ const BalanceLedger = require('../models/BalanceLedger');
 const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const UsdtWallet = require('../models/UsdtWallet');
+const ScannerConfig = require('../models/ScannerConfig');
 
 const generateRequestId = () => {
   return `TDR-${Date.now().toString().slice(-6)}-${crypto.randomInt(1000, 9999)}`;
 };
+
+// Default payment expiry duration for deposit sessions: exactly 30 minutes (1,800,000 ms)
+const DEPOSIT_EXPIRY_MINUTES = 30;
 
 // Helper to format deposit document for responses
 const formatDepositDoc = (doc) => {
@@ -18,10 +24,13 @@ const formatDepositDoc = (doc) => {
     depositType: doc.depositType,
     depositTypeLabel:
       doc.depositType === 'SECURITY_DEPOSIT' ? 'Security deposit' : 'Working deposit',
+    systemType: doc.systemType || 'NORMAL',
     amount: doc.amount,
     currency: doc.currency || 'USDT',
     network: doc.network || 'TRC20',
     wallet: doc.wallet || doc.destinationWalletSnapshot?.address || '-',
+    scannerId: doc.scannerId || doc.destinationWalletSnapshot?.scannerId || '',
+    qrImageUrl: doc.qrImageUrl || doc.destinationWalletSnapshot?.qrImageUrl || '',
     destinationWalletSnapshot: doc.destinationWalletSnapshot || {},
     txHash: doc.txHash || doc.proofReference || '-',
     screenshot: doc.screenshot || doc.proofImage || '-',
@@ -87,7 +96,51 @@ const getTraderDepositSettings = async (req, res) => {
       $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
     }).sort({ createdAt: -1 });
 
-    const activeWallets = (config.destinationWallets || []).filter((w) => w.isActive !== false);
+    // Retrieve active scanner configured by Administrator
+    const activeScanner = await ScannerConfig.findOne({
+      isActive: true,
+      status: 'ACTIVE',
+      isPublished: true,
+    }).sort({ updatedAt: -1 });
+
+    const activeWalletAddress = activeScanner
+      ? (activeScanner.merchantIdentifier || activeScanner.walletAddress || '').trim()
+      : null;
+    const activeQrImageUrl = activeScanner
+      ? (activeScanner.qrImageUrl || activeScanner.assetUrl || '').trim()
+      : null;
+
+    const activeScannerData = activeScanner && activeWalletAddress
+      ? {
+          id: activeScanner._id,
+          scannerId: activeScanner.scannerId,
+          scannerName: activeScanner.scannerName,
+          merchantName: activeScanner.merchantName,
+          walletAddress: activeWalletAddress,
+          qrImageUrl: activeQrImageUrl,
+          network: 'TRC20',
+          currency: 'USDT',
+          isActive: true,
+        }
+      : null;
+
+    const destinationWallets = (config.destinationWallets || []).map((w) => {
+      const wObj = typeof w.toObject === 'function' ? w.toObject() : { ...w };
+      if (wObj.currency === 'USDT') {
+        if (activeScannerData) {
+          wObj.address = activeScannerData.walletAddress;
+          wObj.label = activeScannerData.scannerName;
+          wObj.isActive = true;
+          wObj.scannerId = activeScannerData.scannerId;
+          wObj.qrImageUrl = activeScannerData.qrImageUrl;
+        } else {
+          wObj.isActive = false;
+        }
+      }
+      return wObj;
+    });
+
+    const activeWallets = destinationWallets.filter((w) => w.isActive !== false);
 
     return res.status(200).json({
       success: true,
@@ -99,8 +152,9 @@ const getTraderDepositSettings = async (req, res) => {
         minDepositAmountInr: config.minDepositAmountInr || 1000,
         maxDepositAmountInr: config.maxDepositAmountInr || 5000000,
         allowedCurrencies: config.allowedCurrencies || ['USDT', 'INR'],
-        depositExpiryMinutes: config.depositExpiryMinutes || 120,
+        depositExpiryMinutes: (config.depositExpiryMinutes && config.depositExpiryMinutes !== 120) ? config.depositExpiryMinutes : DEPOSIT_EXPIRY_MINUTES,
         destinationWallets: activeWallets,
+        activeScanner: activeScannerData,
         activeRequest: activeRequest ? formatDepositDoc(activeRequest) : null,
       },
     });
@@ -123,7 +177,7 @@ const getTraderDepositRequests = async (req, res) => {
     // Automatically transition expired drafts
     await checkAndExpireRequests({ userId });
 
-    const filter = { userId };
+    const filter = { userId, systemType: { $ne: 'CRYPTO' } };
     if (req.query.status && req.query.status !== 'ALL') {
       filter.status = req.query.status.toUpperCase();
     }
@@ -215,6 +269,8 @@ const createTraderDepositRequest = async (req, res) => {
       });
     }
 
+    const tronRegex = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
+
     // Check if Trader already has an active unexpired draft or awaiting payment request
     await checkAndExpireRequests({ userId });
     const now = new Date();
@@ -224,7 +280,60 @@ const createTraderDepositRequest = async (req, res) => {
       $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
     }).sort({ createdAt: -1 });
 
+    // Find current active scanner for USDT
+    let activeScanner = null;
+    let activeWalletAddress = null;
+    let activeQrImageUrl = null;
+
+    if (cleanCurrency === 'USDT') {
+      activeScanner = await ScannerConfig.findOne({
+        isActive: true,
+        status: 'ACTIVE',
+        isPublished: true,
+      }).sort({ updatedAt: -1 });
+
+      activeWalletAddress = activeScanner
+        ? (activeScanner.merchantIdentifier || activeScanner.walletAddress || '').trim()
+        : null;
+      activeQrImageUrl = activeScanner
+        ? (activeScanner.qrImageUrl || activeScanner.assetUrl || '').trim()
+        : null;
+
+      // If no valid active scanner is configured, do NOT silently fall back to hardcoded demo wallet
+      if (!activeScanner || !activeWalletAddress || !tronRegex.test(activeWalletAddress)) {
+        return res.status(503).json({
+          success: false,
+          message: 'USDT TRC20 deposit payment destination is temporarily unavailable. Admin has not activated a payment scanner. Please contact administrator.',
+          isDestinationUnavailable: true,
+        });
+      }
+    }
+
     if (existingActive) {
+      // If existing active draft has an invalid or placeholder wallet and is still unsubmitted, securely reassign to active scanner
+      if (cleanCurrency === 'USDT' && activeWalletAddress && existingActive.status === 'DRAFT' && !existingActive.txHash && !existingActive.screenshot) {
+        const isDummyOrInvalid =
+          existingActive.wallet === 'TX7D7vH3qV8kYq4eR9P4dE8vL3kYq4eR9P' ||
+          existingActive.wallet === 'TQr8Vp6K9vW2Z4yL1m5N7q3J8xH2gB9dF1' ||
+          !tronRegex.test(existingActive.wallet || '');
+
+        if (isDummyOrInvalid) {
+          existingActive.wallet = activeWalletAddress;
+          existingActive.scannerConfigId = activeScanner._id;
+          existingActive.scannerId = activeScanner.scannerId;
+          existingActive.qrImageUrl = activeQrImageUrl || '';
+          existingActive.destinationWalletSnapshot = {
+            address: activeWalletAddress,
+            network: 'TRC20',
+            currency: 'USDT',
+            label: activeScanner.scannerName || 'USDT TRC20 Vault',
+            scannerId: activeScanner.scannerId,
+            qrImageUrl: activeQrImageUrl || '',
+          };
+          await existingActive.save();
+        }
+      }
+
       return res.status(200).json({
         success: true,
         message: 'You already have an active deposit request. Continue payment for the existing request.',
@@ -235,17 +344,34 @@ const createTraderDepositRequest = async (req, res) => {
     }
 
     // Assign authorized destination wallet
-    const assignedWallet = (config.destinationWallets || []).find(
-      (w) => w.currency === cleanCurrency && w.isActive !== false
-    ) || {
-      address: cleanCurrency === 'USDT' ? 'TQr8Vp6K9vW2Z4yL1m5N7q3J8xH2gB9dF1' : 'HDFC0001234 / 50200012345678',
-      network,
-      currency: cleanCurrency,
-      label: cleanCurrency === 'USDT' ? 'Primary Corporate USDT-TRC20 Vault' : 'Corporate Escrow Account',
-    };
+    let assignedWallet;
+    if (cleanCurrency === 'USDT') {
+      assignedWallet = {
+        address: activeWalletAddress,
+        network: 'TRC20',
+        currency: 'USDT',
+        label: activeScanner.scannerName || 'USDT TRC20 Vault',
+        scannerId: activeScanner.scannerId,
+        scannerConfigId: activeScanner._id,
+        qrImageUrl: activeQrImageUrl || '',
+      };
+    } else {
+      const foundInConfig = (config.destinationWallets || []).find(
+        (w) => w.currency === cleanCurrency && w.isActive !== false
+      );
+      assignedWallet = foundInConfig || {
+        address: 'HDFC0001234 / 50200012345678',
+        network,
+        currency: cleanCurrency,
+        label: 'Corporate Escrow Account',
+      };
+    }
 
-    const expiryDurationMinutes = config.depositExpiryMinutes || 120;
-    const expiresAt = new Date(Date.now() + expiryDurationMinutes * 60 * 1000);
+    const expiryDurationMinutes = (config.depositExpiryMinutes && config.depositExpiryMinutes !== 120)
+      ? config.depositExpiryMinutes
+      : DEPOSIT_EXPIRY_MINUTES;
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + expiryDurationMinutes * 60 * 1000);
     const requestId = generateRequestId();
 
     const deposit = new DepositRequest({
@@ -253,26 +379,33 @@ const createTraderDepositRequest = async (req, res) => {
       userId,
       clientId: req.user.username,
       depositType: cleanDepositType,
+      systemType: 'NORMAL',
       amount: Number(numAmount.toFixed(2)),
       currency: cleanCurrency,
       network,
       wallet: assignedWallet.address,
+      scannerConfigId: assignedWallet.scannerConfigId || null,
+      scannerId: assignedWallet.scannerId || '',
+      qrImageUrl: assignedWallet.qrImageUrl || '',
       destinationWalletSnapshot: {
         address: assignedWallet.address,
         network: assignedWallet.network || network,
         currency: cleanCurrency,
         label: assignedWallet.label || '',
+        scannerId: assignedWallet.scannerId || '',
+        qrImageUrl: assignedWallet.qrImageUrl || '',
       },
       status: 'DRAFT',
       verification: 'NOT_CHECKED',
       clientNotes: clientNotes ? clientNotes.trim() : '',
+      createdAt,
       expiresAt,
       auditHistory: [
         {
           action: 'DEPOSIT_DRAFT_CREATED',
           performedBy: userId,
           timestamp: new Date(),
-          notes: `Created ${cleanDepositType} for ${numAmount} ${cleanCurrency}`,
+          notes: `Created ${cleanDepositType} for ${numAmount} ${cleanCurrency} (Scanner: ${assignedWallet.scannerId || 'N/A'})`,
           newStatus: 'DRAFT',
         },
       ],
@@ -491,7 +624,7 @@ const getAllDepositsAdmin = async (req, res) => {
 
     await checkAndExpireRequests();
 
-    const filter = {};
+    const filter = { systemType: { $ne: 'CRYPTO' } };
     if (req.query.status && req.query.status !== 'ALL') {
       filter.status = req.query.status.toUpperCase();
     }
@@ -726,6 +859,25 @@ const adminReviewDeposit = async (req, res) => {
         currency: deposit.currency,
       });
 
+      // Socket.IO real-time notification for rejection
+      try {
+        const io = req.app.get('io');
+        if (io) {
+          const payload = {
+            requestId: deposit.requestId,
+            userId: deposit.userId,
+            depositType: deposit.depositType,
+            status: 'REJECTED',
+            amount: deposit.amount,
+            currency: deposit.currency,
+          };
+          io.to(`trader_${deposit.userId.toString()}`).emit('deposit_status_update', payload);
+          io.emit('deposit_updated', payload);
+        }
+      } catch (socketErr) {
+        console.warn('[Deposit Rejection Socket Error]:', socketErr.message);
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Deposit request rejected.',
@@ -735,15 +887,19 @@ const adminReviewDeposit = async (req, res) => {
 
     // 4. Approve Deposit (Atomic balance ledger credit with duplicate protection)
     if (action === 'APPROVE' || action === 'CONFIRM') {
+      const isSecurity = deposit.depositType === 'SECURITY_DEPOSIT';
+      const entryType = isSecurity ? 'SECURITY_DEPOSIT_CONFIRMED' : 'DEPOSIT_CONFIRMED';
+
       // Execute verified ledger entry
       await BalanceLedger.recordVerifiedEntry({
         userId: deposit.userId,
         clientId: deposit.clientId,
         currency: deposit.currency,
-        entryType: 'DEPOSIT_CONFIRMED',
+        entryType,
+        systemType: 'NORMAL',
         amount: deposit.amount,
         referenceRequestId: deposit.requestId,
-        notes: decisionNotes || `Deposit verified: TX ${deposit.txHash || 'N/A'} to ${deposit.wallet}`,
+        notes: decisionNotes || `${isSecurity ? 'Security deposit' : 'Deposit'} verified: TX ${deposit.txHash || 'N/A'} to ${deposit.wallet}`,
         performedBy: req.user._id,
       });
 
@@ -753,21 +909,28 @@ const adminReviewDeposit = async (req, res) => {
       deposit.approvedBy = req.user._id;
       deposit.verifiedAt = deposit.approvedAt;
       deposit.verifiedBy = req.user._id;
-      deposit.adminDecisionNotes = decisionNotes || 'Deposit approved and balance credited';
+      deposit.adminDecisionNotes = decisionNotes || (isSecurity ? 'Security deposit approved and recorded' : 'Deposit approved and balance credited');
 
       deposit.auditHistory.push({
         action: 'DEPOSIT_APPROVED',
         performedBy: req.user._id,
         timestamp: new Date(),
-        notes: decisionNotes || 'Approved by administrator',
+        notes: decisionNotes || (isSecurity ? 'Security deposit approved by administrator' : 'Approved by administrator'),
         previousStatus,
         newStatus: 'APPROVED',
       });
 
       await deposit.save();
 
+      // Sync USDT wallet if USDT
+      let updatedWallet = null;
+      if (deposit.currency === 'USDT') {
+        const UsdtWallet = mongoose.models.UsdtWallet || require('../models/UsdtWallet');
+        updatedWallet = await UsdtWallet.syncWithLedger(deposit.userId);
+      }
+
       await AuditLog.log({
-        action: 'DEPOSIT_CONFIRMED_CREDITED',
+        action: isSecurity ? 'SECURITY_DEPOSIT_APPROVED' : 'DEPOSIT_CONFIRMED_CREDITED',
         user: req.user,
         targetUserId: deposit.userId,
         targetUsername: deposit.clientId,
@@ -777,6 +940,7 @@ const adminReviewDeposit = async (req, res) => {
           requestId: deposit.requestId,
           amount: deposit.amount,
           currency: deposit.currency,
+          depositType: deposit.depositType,
           txHash: deposit.txHash,
         },
       });
@@ -784,18 +948,43 @@ const adminReviewDeposit = async (req, res) => {
       await Notification.sendNotification({
         recipientUserId: deposit.userId,
         recipientClientId: deposit.clientId,
-        type: 'DEPOSIT_CONFIRMED',
-        title: 'Deposit Approved',
-        message: `Your deposit ${deposit.requestId} of ${deposit.amount} ${deposit.currency} was verified and credited to your wallet balance.`,
+        type: isSecurity ? 'SECURITY_DEPOSIT_CONFIRMED' : 'DEPOSIT_CONFIRMED',
+        title: isSecurity ? 'Security Deposit Approved' : 'Deposit Approved',
+        message: isSecurity
+          ? `Your security deposit ${deposit.requestId} of ${deposit.amount} ${deposit.currency} was verified and recorded as Security Deposit.`
+          : `Your deposit ${deposit.requestId} of ${deposit.amount} ${deposit.currency} was verified and credited to your wallet balance.`,
         paymentId: deposit.requestId,
         amount: deposit.amount,
         currency: deposit.currency,
         referenceId: deposit.txHash,
       });
 
+      // Socket.IO real-time notification
+      try {
+        const io = req.app.get('io');
+        if (io) {
+          const payload = {
+            requestId: deposit.requestId,
+            userId: deposit.userId,
+            depositType: deposit.depositType,
+            status: 'APPROVED',
+            amount: deposit.amount,
+            currency: deposit.currency,
+            wallet: updatedWallet ? updatedWallet.toValuation(105) : null,
+          };
+          io.to(`trader_${deposit.userId.toString()}`).emit('deposit_status_update', payload);
+          io.to(`trader_${deposit.userId.toString()}`).emit('balance_update', payload);
+          io.emit('deposit_updated', payload);
+        }
+      } catch (socketErr) {
+        console.warn('[Deposit Approval Socket Error]:', socketErr.message);
+      }
+
       return res.status(200).json({
         success: true,
-        message: `Deposit approved! ${deposit.currency} ${deposit.amount} credited to Trader balance.`,
+        message: isSecurity
+          ? `Security deposit approved! ${deposit.currency} ${deposit.amount} recorded as Security Deposit.`
+          : `Deposit approved! ${deposit.currency} ${deposit.amount} credited to Trader balance.`,
         data: formatDepositDoc(deposit),
       });
     }

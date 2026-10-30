@@ -607,10 +607,13 @@ const getAdminAnalytics = async (req, res) => {
       },
     ]);
 
-    // Pending counts across all request types
+    // Pending counts across all request types (strictly Normal system)
     const pendingPayIns = await PayInRequest.countDocuments({ status: { $in: ['PENDING', 'SUBMITTED', 'UNDER_REVIEW'] } });
     const pendingPayouts = await PayoutRequest.countDocuments({ status: { $in: ['PENDING', 'UNDER_REVIEW', 'PROCESSING'] } });
-    const pendingDeposits = await DepositRequest.countDocuments({ status: { $in: ['PENDING', 'SUBMITTED', 'UNDER_REVIEW'] } });
+    const pendingDeposits = await DepositRequest.countDocuments({
+      status: { $in: ['PENDING', 'SUBMITTED', 'UNDER_REVIEW'] },
+      systemType: { $ne: 'CRYPTO' },
+    });
 
     // Recent requests
     const recentPayIns = await PayInRequest.find().sort({ createdAt: -1 }).limit(5);

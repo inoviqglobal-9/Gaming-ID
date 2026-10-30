@@ -3,6 +3,7 @@ const ScannerConfig = require('../models/ScannerConfig');
 const PayInRequest = require('../models/PayInRequest');
 const AuditLog = require('../models/AuditLog');
 const CryptoPaymentQR = require('../models/CryptoPaymentQR');
+const DepositConfig = require('../models/DepositConfig');
 let cryptoController = null;
 try {
   cryptoController = require('./cryptoController');
@@ -20,29 +21,34 @@ const generateScannerId = async () => {
 // GET /api/scanner/active (Client & Public: returns the active, published scanner)
 const getActiveScanner = async (req, res) => {
   try {
-    let scanner = await ScannerConfig.findOne({
+    const { network, currency } = req.query;
+    const filter = {
       isActive: true,
       status: 'ACTIVE',
       isPublished: true,
-    }).sort({ updatedAt: -1 });
+    };
 
-    if (!scanner) {
-      const totalScanners = await ScannerConfig.countDocuments();
-      if (totalScanners === 0) {
-        const { seedDemoScanner } = require('../scripts/seedDemoScanner');
-        scanner = await seedDemoScanner();
-      }
+    if (network === 'TRC20' || currency === 'USDT') {
+      filter.$or = [
+        { paymentProvider: { $regex: /TRC20|USDT/i } },
+        { scannerName: { $regex: /TRC20|USDT/i } },
+        { supportedCurrencies: 'USDT' },
+      ];
     }
+
+    const scanner = await ScannerConfig.findOne(filter).sort({ updatedAt: -1 });
 
     if (!scanner) {
       return res.status(200).json({
         success: true,
         configured: false,
         isAvailable: false,
-        message: 'PhonePe payments are currently unavailable. Please contact support.',
+        message: 'Deposit payment destination is currently unavailable. Please contact administrator.',
         scanner: null,
       });
     }
+
+    const walletAddress = (scanner.merchantIdentifier || scanner.walletAddress || '').trim();
 
     return res.status(200).json({
       success: true,
@@ -53,14 +59,20 @@ const getActiveScanner = async (req, res) => {
         scannerId: scanner.scannerId,
         scannerName: scanner.scannerName,
         merchantName: scanner.merchantName,
-        merchantIdentifier: scanner.merchantIdentifier,
+        merchantIdentifier: walletAddress,
+        walletAddress,
         paymentProvider: scanner.paymentProvider,
+        network: 'TRC20',
+        currency: 'USDT',
         qrImageUrl: scanner.qrImageUrl || scanner.assetUrl,
         mode: scanner.mode,
         isDemo: scanner.mode === 'DEMO_ONLY',
         instructions: scanner.instructions,
         paymentPurpose: scanner.paymentPurpose,
         version: scanner.version,
+        status: scanner.status,
+        isActive: scanner.isActive,
+        isPublished: scanner.isPublished,
         warningBanner:
           scanner.mode === 'DEMO_ONLY'
             ? 'DEMO ONLY — DO NOT PAY. This scanner is strictly for simulation and testing.'
@@ -422,47 +434,148 @@ const activateScanner = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Archived scanners cannot be activated.' });
     }
 
-    // Atomically deactivate any other currently active scanner
+    // 1. Verify that the scanner is published
+    if (!scanner.isPublished && scanner.status !== 'PUBLISHED') {
+      return res.status(400).json({
+        success: false,
+        message: 'Scanner must be published before activation.',
+      });
+    }
+
+    // 2. Validate that the wallet address exists
+    const walletAddr = (scanner.merchantIdentifier || scanner.walletAddress || '').trim();
+    if (!walletAddr) {
+      return res.status(400).json({
+        success: false,
+        message: 'Wallet address is required for scanner activation.',
+      });
+    }
+
+    // 3. Validate that the QR image exists
+    const qrImg = (scanner.qrImageUrl || scanner.assetUrl || '').trim();
+    if (!qrImg) {
+      return res.status(400).json({
+        success: false,
+        message: 'QR scanner image is required for scanner activation.',
+      });
+    }
+
+    // 4. Validate that the scanner uses the configured USDT TRC20 network
+    const isTrc20 =
+      (scanner.paymentProvider && /TRC20|USDT/i.test(scanner.paymentProvider)) ||
+      (scanner.scannerName && /TRC20|USDT/i.test(scanner.scannerName)) ||
+      (Array.isArray(scanner.supportedCurrencies) && scanner.supportedCurrencies.includes('USDT'));
+    if (!isTrc20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Scanner must be configured for the USDT TRC20 network.',
+      });
+    }
+
+    // 5. Validate the TRON wallet address format (starts with 'T', 34 base58 characters)
+    const tronRegex = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
+    if (!tronRegex.test(walletAddr)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid TRON (TRC20) wallet address format. Address must start with "T" and contain exactly 34 Base58 characters.',
+      });
+    }
+
+    // 7 & 8. Deactivate previous active scanner for the same payment module and network; prevent two simultaneously active
     await ScannerConfig.updateMany(
       { _id: { $ne: scanner._id }, isActive: true },
-      { $set: { isActive: false, status: 'INACTIVE' } }
+      {
+        $set: {
+          isActive: false,
+          status: 'PUBLISHED',
+          deactivatedAt: new Date(),
+          deactivatedBy: req.user ? req.user._id : null,
+        },
+      }
     );
 
-    // Activate the targeted scanner
+    // 6 & 9. Mark this scanner ACTIVE in MongoDB, save activation details and timestamp
     scanner.isActive = true;
     scanner.isPublished = true;
     scanner.status = 'ACTIVE';
+    scanner.walletAddress = walletAddr;
+    scanner.merchantIdentifier = walletAddr;
+    scanner.qrImageUrl = qrImg;
+    scanner.assetUrl = qrImg;
+    scanner.activatedAt = new Date();
+    scanner.activatedBy = req.user ? req.user._id : scanner.uploadedBy;
     await scanner.save();
 
-    // Synchronize with CryptoPaymentQR and broadcast live stream if TRC20 wallet address is present
-    const walletAddr = (scanner.merchantIdentifier || '').trim();
-    if (walletAddr) {
-      try {
-        await CryptoPaymentQR.updateMany({}, { isActive: false });
-        const existingQR = await CryptoPaymentQR.findOne({ walletAddress: walletAddr });
-        let activeQRDoc;
-        if (existingQR) {
-          existingQR.isActive = true;
-          existingQR.qrImageUrl = scanner.qrImageUrl || scanner.assetUrl || existingQR.qrImageUrl;
-          existingQR.network = 'TRC20';
-          await existingQR.save();
-          activeQRDoc = existingQR;
-        } else {
-          activeQRDoc = await CryptoPaymentQR.create({
-            qrId: scanner.scannerId,
-            walletAddress: walletAddr,
-            network: 'TRC20',
-            qrImageUrl: scanner.qrImageUrl || scanner.assetUrl || '',
-            isActive: true,
-            uploadedBy: req.user?._id || scanner.uploadedBy,
-          });
-        }
-        if (cryptoController && cryptoController.broadcastActiveQR) {
-          await cryptoController.broadcastActiveQR(activeQRDoc);
-        }
-      } catch (syncErr) {
-        console.error('[Scanner Activate Crypto Sync Error]:', syncErr.message);
+    // 10. Synchronize with DepositConfig destinationWallets so backend deposit systems reflect newly active scanner
+    try {
+      const depConfig = await DepositConfig.getOrCreateDefault();
+      const usdtIdx = (depConfig.destinationWallets || []).findIndex((w) => w.currency === 'USDT');
+      if (usdtIdx !== -1) {
+        depConfig.destinationWallets[usdtIdx].address = walletAddr;
+        depConfig.destinationWallets[usdtIdx].network = 'TRC20';
+        depConfig.destinationWallets[usdtIdx].label = scanner.scannerName || 'USDT TRC20 Vault';
+        depConfig.destinationWallets[usdtIdx].isActive = true;
+      } else {
+        depConfig.destinationWallets.push({
+          currency: 'USDT',
+          network: 'TRC20',
+          address: walletAddr,
+          label: scanner.scannerName || 'USDT TRC20 Vault',
+          isActive: true,
+        });
       }
+      await depConfig.save();
+    } catch (depErr) {
+      console.warn('[DepositConfig Sync Warning]:', depErr.message);
+    }
+
+    // Synchronize with CryptoPaymentQR if needed
+    try {
+      await CryptoPaymentQR.updateMany({}, { isActive: false });
+      const existingQR = await CryptoPaymentQR.findOne({ walletAddress: walletAddr });
+      let activeQRDoc;
+      if (existingQR) {
+        existingQR.isActive = true;
+        existingQR.qrImageUrl = qrImg;
+        existingQR.network = 'TRC20';
+        await existingQR.save();
+        activeQRDoc = existingQR;
+      } else {
+        activeQRDoc = await CryptoPaymentQR.create({
+          qrId: scanner.scannerId,
+          walletAddress: walletAddr,
+          network: 'TRC20',
+          qrImageUrl: qrImg,
+          isActive: true,
+          uploadedBy: req.user ? req.user._id : scanner.uploadedBy,
+        });
+      }
+      if (cryptoController && cryptoController.broadcastActiveQR) {
+        await cryptoController.broadcastActiveQR(activeQRDoc);
+      }
+    } catch (syncErr) {
+      console.warn('[Scanner Activate Crypto Sync Error]:', syncErr.message);
+    }
+
+    // Real-time broadcast to connected Trader clients
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const payload = {
+          scannerId: scanner.scannerId,
+          scannerName: scanner.scannerName,
+          walletAddress: walletAddr,
+          qrImageUrl: qrImg,
+          network: 'TRC20',
+          currency: 'USDT',
+          status: 'ACTIVE',
+          isActive: true,
+        };
+        io.emit('scanner_config_updated', payload);
+        io.emit('deposit_scanner_updated', payload);
+      }
+    } catch (socketErr) {
+      console.warn('[Scanner Activate Socket Error]:', socketErr.message);
     }
 
     await AuditLog.log({
@@ -473,14 +586,14 @@ const activateScanner = async (req, res) => {
       details: {
         scannerId: scanner.scannerId,
         scannerName: scanner.scannerName,
-        merchantName: scanner.merchantName,
+        walletAddress: walletAddr,
         mode: scanner.mode,
       },
     });
 
     return res.status(200).json({
       success: true,
-      message: `Scanner ${scanner.scannerId} (${scanner.merchantName}) is now ACTIVE for all new client payments.`,
+      message: `Scanner ${scanner.scannerId} is now ACTIVE for all new deposit requests.`,
       scanner,
     });
   } catch (error) {
@@ -499,9 +612,26 @@ const deactivateScanner = async (req, res) => {
 
     scanner.isActive = false;
     scanner.status = 'INACTIVE';
+    scanner.deactivatedAt = new Date();
+    scanner.deactivatedBy = req.user ? req.user._id : null;
     await scanner.save();
 
-    const walletAddr = (scanner.merchantIdentifier || '').trim();
+    // Mark DepositConfig destination wallet inactive for USDT if no other active scanner
+    try {
+      const otherActive = await ScannerConfig.findOne({ _id: { $ne: scanner._id }, isActive: true });
+      if (!otherActive) {
+        const depConfig = await DepositConfig.getOrCreateDefault();
+        const usdtIdx = (depConfig.destinationWallets || []).findIndex((w) => w.currency === 'USDT');
+        if (usdtIdx !== -1) {
+          depConfig.destinationWallets[usdtIdx].isActive = false;
+          await depConfig.save();
+        }
+      }
+    } catch (depErr) {
+      console.warn('[DepositConfig Deactivate Warning]:', depErr.message);
+    }
+
+    const walletAddr = (scanner.merchantIdentifier || scanner.walletAddress || '').trim();
     if (walletAddr) {
       try {
         await CryptoPaymentQR.updateMany({ walletAddress: walletAddr }, { isActive: false });
@@ -510,8 +640,25 @@ const deactivateScanner = async (req, res) => {
           await cryptoController.broadcastActiveQR(currentActive || null);
         }
       } catch (syncErr) {
-        console.error('[Scanner Deactivate Crypto Sync Error]:', syncErr.message);
+        console.warn('[Scanner Deactivate Crypto Sync Error]:', syncErr.message);
       }
+    }
+
+    // Real-time broadcast
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const payload = {
+          scannerId: scanner.scannerId,
+          status: 'INACTIVE',
+          isActive: false,
+          isAvailable: false,
+        };
+        io.emit('scanner_config_updated', payload);
+        io.emit('deposit_scanner_updated', payload);
+      }
+    } catch (socketErr) {
+      console.warn('[Scanner Deactivate Socket Error]:', socketErr.message);
     }
 
     await AuditLog.log({

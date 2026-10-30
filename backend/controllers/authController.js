@@ -126,12 +126,13 @@ const login = async (req, res) => {
     });
 
     // Calculate initial balances for client and trader accounts
-    let balances = { INR: 0.00, USDT: 0.00 };
+    let balances = { INR: 0.00, USDT: 0.00, securityDeposit: 0.00 };
     if (user.role === 'CLIENT' || user.role === 'TRADER') {
       const inrBalance = await BalanceLedger.calculateAvailableBalance(user._id, 'INR');
       const usdtWallet = await UsdtWallet.syncWithLedger(user._id);
       const usdtBalance = parseFloat(usdtWallet.availableBalance.toString()) || 0.0;
-      balances = { INR: inrBalance, USDT: usdtBalance };
+      const secBalance = parseFloat(usdtWallet.securityDepositBalance ? usdtWallet.securityDepositBalance.toString() : '0.000000') || 0.0;
+      balances = { INR: inrBalance, USDT: usdtBalance, securityDeposit: secBalance };
     }
 
     return res.status(200).json({
@@ -239,13 +240,14 @@ const traderLogin = async (req, res, next) => {
 const getMe = async (req, res) => {
   try {
     const user = req.user;
-    let balances = { INR: 0.00, USDT: 0.00 };
+    let balances = { INR: 0.00, USDT: 0.00, securityDeposit: 0.00 };
 
     if (user.role === 'CLIENT' || user.role === 'TRADER') {
       const inrBalance = await BalanceLedger.calculateAvailableBalance(user._id, 'INR');
       const usdtWallet = await UsdtWallet.syncWithLedger(user._id);
       const usdtBalance = parseFloat(usdtWallet.availableBalance.toString()) || 0.0;
-      balances = { INR: inrBalance, USDT: usdtBalance };
+      const secBalance = parseFloat(usdtWallet.securityDepositBalance ? usdtWallet.securityDepositBalance.toString() : '0.000000') || 0.0;
+      balances = { INR: inrBalance, USDT: usdtBalance, securityDeposit: secBalance };
     }
 
     return res.status(200).json({

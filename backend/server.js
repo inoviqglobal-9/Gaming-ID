@@ -1,6 +1,8 @@
+const http = require('http');
 const app = require('./app');
 const { connectDB, disconnectDB } = require('./config/db');
 const { config, validateConfig } = require('./config/env');
+const { initSocket } = require('./socket');
 
 const startServer = async () => {
   const validation = validateConfig();
@@ -24,7 +26,10 @@ const startServer = async () => {
     const { seedDemoTrader } = require('./scripts/seedTrader');
     await seedDemoTrader();
 
-    const server = app.listen(config.port, () => {
+    const server = http.createServer(app);
+    initSocket(server, config.clientOrigin);
+
+    server.listen(config.port, () => {
       console.log('========================================================');
       console.log(`[Server] Secure Scanner & Trader Backend running on port ${config.port}`);
       console.log(`[Server] Environment: ${config.nodeEnv}`);

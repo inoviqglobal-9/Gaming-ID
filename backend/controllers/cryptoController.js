@@ -9,6 +9,7 @@ const UsdtWallet = require('../models/UsdtWallet');
 const BalanceLedger = require('../models/BalanceLedger');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const { emitDepositStatusUpdate } = require('../socket');
 
 // Helper to format float to 2 and 6 decimal places
 const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
@@ -149,7 +150,7 @@ const streamActiveQR = async (req, res) => {
 
 const getCryptoRates = async (req, res) => {
   const baseRate = Number(config.usdtInrRate || 105.0);
-  const depositBonusPercent = 0.0; // Completely removed (0% Bonus)
+  const depositBonusPercent = 3.0; // Preserved 3% Deposit Bonus
   const withdrawalBonusPercent = Number(config.cryptoWithdrawalBonusPercent || 1.0);
   const withdrawalFeePercent = 0.0; // Withdrawal fee is 0%
   const depositFeePercent = 0.0; // Deposit fee is 0%
@@ -161,7 +162,7 @@ const getCryptoRates = async (req, res) => {
     success: true,
     currency: 'USDT',
     baseRate,
-    depositBonusPercent: 0,
+    depositBonusPercent: 3,
     depositFeePercent: 0,
     withdrawalFeePercent: 0,
     withdrawalBonusPercent,
@@ -169,7 +170,7 @@ const getCryptoRates = async (req, res) => {
     effectiveWithdrawalRate,
     fixedWithdrawalAmounts: FIXED_WITHDRAWAL_AMOUNTS,
     formula: {
-      deposit: 'Dynamic USDT Deposit (1:1 Exact USDT Credit). INR Equivalent = Deposit Amount × ₹105',
+      deposit: 'Dynamic USDT Deposit with 3% Bonus. 1 USDT = ₹105. Total Credit = Deposit Amount * 1.03',
       withdrawal: 'Trader Balance Debit = 99% of Requested USDT (+1% Bonus Benefit). Full Payout = 100% Requested USDT Equivalent (₹105/USDT)',
     },
   });
@@ -208,6 +209,9 @@ const getQuotation = async (req, res) => {
 
   if (type.toUpperCase() === 'DEPOSIT') {
     const depositAmountUSDT = numAmount;
+    const bonusPercent = 3.0;
+    const bonusAmountUSDT = round6(depositAmountUSDT * (bonusPercent / 100));
+    const totalCreditUSDT = round6(depositAmountUSDT + bonusAmountUSDT);
     const inrEquivalent = round2(depositAmountUSDT * baseRate);
 
     return res.status(200).json({
@@ -215,13 +219,13 @@ const getQuotation = async (req, res) => {
       type: 'DEPOSIT',
       depositAmountUSDT,
       usdtAmount: depositAmountUSDT,
-      expectedUsdtCredit: depositAmountUSDT,
-      totalCreditUSDT: depositAmountUSDT,
+      expectedUsdtCredit: totalCreditUSDT,
+      totalCreditUSDT,
       amountToSend: depositAmountUSDT,
       fixedRate: baseRate,
       inrEquivalent,
-      bonusPercent: 0,
-      bonusAmountUSDT: 0,
+      bonusPercent: 3,
+      bonusAmountUSDT,
       feePercent: 0,
       feeAmount: 0,
     });
@@ -331,12 +335,12 @@ const createDepositRequest = async (req, res) => {
 
     const proofUrl = req.file ? `/uploads/${req.file.filename}` : (req.body.paymentProofUrl || '');
 
-    // Exact 1:1 Deposit Credit (0% Bonus) & Fixed ₹105 Rate INR Equivalent
+    // Dynamic Deposit with 3% Bonus & Fixed ₹105 Rate INR Equivalent
     const baseRate = Number(config.usdtInrRate || 105.0);
     const inrEquivalent = round2(numAmount * baseRate);
-    const totalCreditUSDT = numAmount; // EXACT 1:1, NO BONUS
-    const bonusPercent = 0.0;
-    const bonusAmountUSDT = 0.0;
+    const bonusPercent = 3.0;
+    const bonusAmountUSDT = round6(numAmount * (bonusPercent / 100));
+    const totalCreditUSDT = round6(numAmount + bonusAmountUSDT);
 
     const network = (req.body.network || activeQR.network || 'TRC20').trim();
     const destinationWalletAddress = (activeQR.walletAddress || activeQR.upiId || '').trim();
@@ -356,9 +360,9 @@ const createDepositRequest = async (req, res) => {
       traderUsername: req.user.username,
       depositAmountUSDT: numAmount,
       usdtAmount: numAmount,
-      bonusPercent: 0,
-      bonusAmountUSDT: 0,
-      totalCreditUSDT: numAmount,
+      bonusPercent,
+      bonusAmountUSDT,
+      totalCreditUSDT,
       baseRate,
       inrEquivalent,
       network,
@@ -378,12 +382,12 @@ const createDepositRequest = async (req, res) => {
         recipientUserId: adm._id,
         recipientClientId: adm.username,
         type: 'CRYPTO_DEPOSIT_SUBMITTED',
-        title: 'New Crypto Deposit Request (1:1 Exact USDT)',
-        message: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (Expected Credit: ${numAmount} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}`,
+        title: 'New Crypto Deposit Request (+3% Bonus)',
+        message: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (3% Bonus: ${bonusAmountUSDT} USDT, Total Credit: ${totalCreditUSDT} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}`,
         referenceId: requestId,
         amount: totalCreditUSDT,
         currency: 'USDT',
-        metadata: { depositAmountUSDT: numAmount, inrEquivalent, totalCreditUSDT, txHash, network, requestId },
+        metadata: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash, network, requestId },
       });
     }
 
@@ -392,12 +396,12 @@ const createDepositRequest = async (req, res) => {
       recipientUserId: req.user._id,
       recipientClientId: req.user.username,
       type: 'CRYPTO_DEPOSIT_SUBMITTED',
-      title: 'Crypto Deposit Request Submitted (1:1 Exact USDT)',
-      message: `Your deposit request for ${numAmount} USDT (INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}) has been submitted for blockchain verification.`,
+      title: 'Crypto Deposit Request Submitted (+3% Bonus)',
+      message: `Your deposit request for ${numAmount} USDT (+3% Bonus: ${bonusAmountUSDT} USDT, Total Credit: ${totalCreditUSDT} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}) has been submitted for Admin verification.`,
       referenceId: requestId,
       amount: totalCreditUSDT,
       currency: 'USDT',
-      metadata: { depositAmountUSDT: numAmount, inrEquivalent, totalCreditUSDT, txHash, network, requestId },
+      metadata: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash, network, requestId },
     });
 
     // Log activity
@@ -408,14 +412,14 @@ const createDepositRequest = async (req, res) => {
       actorRole: 'TRADER',
       actionType: 'DEPOSIT_REQUEST_SUBMITTED',
       requestId,
-      details: { depositAmountUSDT: numAmount, totalCreditUSDT, inrEquivalent, network, txHash },
-      description: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (INR Eq: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}.`,
+      details: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, network, txHash },
+      description: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (+3% Bonus: ${bonusAmountUSDT} USDT, Total: ${totalCreditUSDT} USDT, INR Eq: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}.`,
       ipAddress: req.ip,
     });
 
     return res.status(201).json({
       success: true,
-      message: `Deposit request submitted successfully. You will receive ${totalCreditUSDT} USDT (${numAmount} USDT + 3% bonus) upon blockchain verification.`,
+      message: `Deposit request submitted successfully. You will receive ${totalCreditUSDT} USDT (${numAmount} USDT + 3% bonus) upon Admin verification.`,
       data: depositReq,
     });
   } catch (error) {
@@ -640,6 +644,19 @@ const getTraderCryptoTransactions = async (req, res) => {
   }
 };
 
+// GET /api/crypto/wallet (Authoritative Crypto Subledger Valuation)
+const getTraderCryptoWallet = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const wallet = await UsdtWallet.syncWithLedger(userId);
+    const valuation = await wallet.toSubledgerValuation('CRYPTO', config.usdtInrRate || 105.0);
+    return res.status(200).json(valuation);
+  } catch (error) {
+    console.error('[getTraderCryptoWallet Error]:', error.message);
+    return res.status(500).json({ success: false, message: 'Failed to retrieve crypto wallet.' });
+  }
+};
+
 // ==========================================
 // 6. ADMIN CRYPTO OVERVIEW & STATS
 // ==========================================
@@ -758,36 +775,53 @@ const approveDeposit = async (req, res) => {
     }
 
     const depositAmount = depositReq.depositAmountUSDT || depositReq.usdtAmount;
-    // EXACT 1:1 USDT CREDITING: Credit exactly verified USDT amount (no bonus)
-    const verifiedAmount = req.body.verifiedUSDT !== undefined && !isNaN(parseFloat(req.body.verifiedUSDT))
-      ? parseFloat(req.body.verifiedUSDT)
-      : depositAmount;
-    const creditAmount = verifiedAmount;
-    const baseRate = Number(config.usdtInrRate || 105.0);
-    const inrEquivalent = round2(creditAmount * baseRate);
+    const bonusPercent = depositReq.bonusPercent !== undefined && depositReq.bonusPercent !== null && depositReq.bonusPercent > 0
+      ? depositReq.bonusPercent
+      : 3.0;
+    const bonusAmountUSDT = round6(depositAmount * (bonusPercent / 100));
+    // Preserved 3% Bonus Total Wallet Credit
+    const totalCreditUSDT = depositReq.totalCreditUSDT && depositReq.totalCreditUSDT > depositAmount
+      ? depositReq.totalCreditUSDT
+      : round6(depositAmount + bonusAmountUSDT);
 
-    // Atomically credit trader's USDT wallet with unique ledger reference
-    await UsdtWallet.creditWallet({
+    const baseRate = Number(config.usdtInrRate || 105.0);
+    const inrEquivalent = round2(depositAmount * baseRate);
+
+    // Atomically credit trader's USDT wallet with unique ledger reference (built-in idempotency)
+    const updatedWallet = await UsdtWallet.creditWallet({
       traderId: depositReq.traderId,
       clientId: depositReq.traderUsername,
-      amount: creditAmount,
+      amount: totalCreditUSDT,
       entryType: 'CRYPTO_DEPOSIT_CONFIRMED',
       referenceRequestId: depositReq.requestId,
-      notes: notes || `Verified USDT Deposit of ${creditAmount} USDT credited (TXID: ${depositReq.txHash || depositReq.utr || 'N/A'}, INR Eq: ₹${inrEquivalent.toLocaleString('en-IN')})`,
+      notes: notes || `Verified USDT Deposit of ${depositAmount} USDT (+3% Bonus: ${bonusAmountUSDT} USDT = ${totalCreditUSDT} USDT credited) (TXID: ${depositReq.txHash || depositReq.utr || 'N/A'})`,
       performedBy: req.user._id,
     });
 
     depositReq.status = 'COMPLETED';
-    depositReq.totalCreditUSDT = creditAmount;
-    depositReq.bonusPercent = 0;
-    depositReq.bonusAmountUSDT = 0;
+    depositReq.totalCreditUSDT = totalCreditUSDT;
+    depositReq.bonusPercent = bonusPercent;
+    depositReq.bonusAmountUSDT = bonusAmountUSDT;
     depositReq.inrEquivalent = inrEquivalent;
     depositReq.verifiedBy = req.user._id;
     depositReq.verifiedAt = new Date();
+    depositReq.approvedBy = req.user._id;
+    depositReq.approvedAt = new Date();
     depositReq.ledgerReferenceId = depositReq.requestId;
     await depositReq.save();
 
-    // Broadcast real-time balance update to connected SSE clients
+    // Broadcast real-time Socket.IO and SSE updates
+    emitDepositStatusUpdate(depositReq.traderId, {
+      requestId: depositReq.requestId,
+      status: 'COMPLETED',
+      depositAmountUSDT: depositAmount,
+      bonusPercent,
+      bonusAmountUSDT,
+      totalCreditUSDT,
+      walletBalance: updatedWallet ? parseFloat(updatedWallet.availableBalance.toString()) : undefined,
+      approvedAt: depositReq.approvedAt,
+      message: 'Your Crypto Deposit Request has been approved. Your deposit amount and 3% bonus have been successfully credited to your USDT wallet.',
+    });
     await broadcastBalanceUpdate(depositReq.traderId);
 
     // Notify Trader
@@ -795,12 +829,12 @@ const approveDeposit = async (req, res) => {
       recipientUserId: depositReq.traderId,
       recipientClientId: depositReq.traderUsername,
       type: 'CRYPTO_DEPOSIT_APPROVED',
-      title: 'Crypto Deposit Approved & Credited (1:1 Exact USDT)',
-      message: `Your deposit of ${creditAmount} USDT has been verified and credited to your available balance. Fixed Rate: ₹105 / USDT (INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}).`,
+      title: 'Crypto Deposit Approved (+3% Bonus Credited)',
+      message: `Your deposit of ${depositAmount} USDT and 3% bonus (${bonusAmountUSDT} USDT) have been approved and credited to your USDT wallet. Total credited: ${totalCreditUSDT} USDT.`,
       referenceId: depositReq.requestId,
-      amount: creditAmount,
+      amount: totalCreditUSDT,
       currency: 'USDT',
-      metadata: { depositAmountUSDT: creditAmount, totalCreditUSDT: creditAmount, inrEquivalent, requestId: depositReq.requestId },
+      metadata: { depositAmountUSDT: depositAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, requestId: depositReq.requestId },
     });
 
     // Log activity
@@ -811,14 +845,14 @@ const approveDeposit = async (req, res) => {
       actorRole: 'ADMIN',
       actionType: 'DEPOSIT_APPROVED_AND_CREDITED',
       requestId: depositReq.requestId,
-      details: { depositAmountUSDT: creditAmount, totalCreditUSDT: creditAmount, inrEquivalent, txHash: depositReq.txHash },
-      description: `Admin ${req.user.username} verified blockchain payment and credited ${creditAmount} USDT to ${depositReq.traderUsername} (INR Eq: ₹${inrEquivalent.toLocaleString('en-IN')}).`,
+      details: { depositAmountUSDT: depositAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash: depositReq.txHash },
+      description: `Admin ${req.user.username} approved deposit ${depositReq.requestId} and credited ${totalCreditUSDT} USDT (${depositAmount} USDT + 3% bonus: ${bonusAmountUSDT} USDT) to ${depositReq.traderUsername}.`,
       ipAddress: req.ip,
     });
 
     return res.status(200).json({
       success: true,
-      message: `Deposit approved. Exactly ${creditAmount} USDT credited to trader wallet (INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}).`,
+      message: `Deposit approved. ${totalCreditUSDT} USDT (${depositAmount} USDT + 3% bonus) successfully credited to trader wallet.`,
       data: depositReq,
     });
   } catch (error) {
@@ -829,7 +863,11 @@ const approveDeposit = async (req, res) => {
 
 const rejectDeposit = async (req, res) => {
   const { id } = req.params;
-  const { reason } = req.body || {};
+  const reason = (req.body && (req.body.reason || req.body.rejectionReason || req.body.notes || '')).trim();
+
+  if (!reason) {
+    return res.status(400).json({ success: false, message: 'Rejection reason is required.' });
+  }
 
   try {
     const depositReq = await CryptoDepositRequest.findById(id);
@@ -845,12 +883,25 @@ const rejectDeposit = async (req, res) => {
     }
 
     depositReq.status = 'REJECTED';
-    depositReq.rejectionReason = reason ? reason.trim() : 'Transaction verification failed on blockchain.';
+    depositReq.rejectionReason = reason;
     depositReq.verifiedBy = req.user._id;
     depositReq.verifiedAt = new Date();
+    depositReq.rejectedBy = req.user._id;
+    depositReq.rejectedAt = new Date();
     await depositReq.save();
 
     const depositAmount = depositReq.depositAmountUSDT || depositReq.usdtAmount;
+
+    // Broadcast real-time Socket.IO and SSE updates
+    emitDepositStatusUpdate(depositReq.traderId, {
+      requestId: depositReq.requestId,
+      status: 'REJECTED',
+      depositAmountUSDT: depositAmount,
+      rejectionReason: reason,
+      rejectedAt: depositReq.rejectedAt,
+      message: `Your Crypto Deposit Request has been rejected by Admin: ${reason}`,
+    });
+    await broadcastBalanceUpdate(depositReq.traderId);
 
     // Notify Trader
     await Notification.sendNotification({
@@ -858,11 +909,11 @@ const rejectDeposit = async (req, res) => {
       recipientClientId: depositReq.traderUsername,
       type: 'CRYPTO_DEPOSIT_REJECTED',
       title: 'Crypto Deposit Request Rejected',
-      message: `Your deposit request for ${depositAmount} USDT was rejected: ${depositReq.rejectionReason}`,
+      message: `Your Crypto Deposit Request has been rejected by Admin. Reason: ${reason}`,
       referenceId: depositReq.requestId,
       amount: depositAmount,
       currency: 'USDT',
-      metadata: { depositAmountUSDT: depositAmount, requestId: depositReq.requestId },
+      metadata: { depositAmountUSDT: depositAmount, rejectionReason: reason, requestId: depositReq.requestId },
     });
 
     // Log activity
@@ -873,8 +924,8 @@ const rejectDeposit = async (req, res) => {
       actorRole: 'ADMIN',
       actionType: 'DEPOSIT_REJECTED',
       requestId: depositReq.requestId,
-      details: { reason: depositReq.rejectionReason },
-      description: `Admin ${req.user.username} rejected deposit request ${depositReq.requestId}: ${depositReq.rejectionReason}`,
+      details: { reason },
+      description: `Admin ${req.user.username} rejected deposit request ${depositReq.requestId}: ${reason}`,
       ipAddress: req.ip,
     });
 
@@ -948,21 +999,73 @@ const approveWithdrawal = async (req, res) => {
       });
     }
 
+    const requestedUSDT = withdrawalReq.requestedUSDT || withdrawalReq.usdtAmount;
+    const debitUSDT = withdrawalReq.balanceDebitUSDT !== undefined
+      ? withdrawalReq.balanceDebitUSDT
+      : round6(requestedUSDT * 0.99);
+    const bonusUSDT = withdrawalReq.bonusUSDT !== undefined
+      ? withdrawalReq.bonusUSDT
+      : round6(requestedUSDT * 0.01);
+
+    // Atomically finalize the 99% debit in BalanceLedger and UsdtWallet
+    let updatedWallet;
+    try {
+      updatedWallet = await UsdtWallet.finalizeDebitReservedBalance({
+        traderId: withdrawalReq.traderId,
+        clientId: withdrawalReq.traderUsername,
+        amount: debitUSDT,
+        referenceRequestId: withdrawalReq.requestId,
+        notes: notes || `Admin approved withdrawal ${withdrawalReq.requestId}: ${debitUSDT} USDT debited (+1% bonus: +${bonusUSDT} USDT, full payout obligation: ₹${withdrawalReq.finalInrPayout || requestedUSDT * 105}).`,
+        performedBy: req.user._id,
+      });
+    } catch (debitErr) {
+      console.error('[approveWithdrawal] Wallet debit failed:', debitErr.message);
+      return res.status(400).json({
+        success: false,
+        message: `Failed to settle withdrawal wallet debit: ${debitErr.message}`,
+      });
+    }
+
     withdrawalReq.status = 'APPROVED';
+    withdrawalReq.ledgerReferenceId = withdrawalReq.requestId;
     withdrawalReq.payoutVerifiedBy = req.user._id;
+    withdrawalReq.approvedAt = new Date();
+    withdrawalReq.approvedBy = req.user._id;
     await withdrawalReq.save();
 
-    const requestedUSDT = withdrawalReq.requestedUSDT || withdrawalReq.usdtAmount;
-    const debitUSDT = withdrawalReq.balanceDebitUSDT || round6(requestedUSDT * 0.99);
-    const bonusUSDT = withdrawalReq.bonusUSDT || round6(requestedUSDT * 0.01);
+    // Broadcast balance update to connected clients via SSE
+    await broadcastBalanceUpdate(withdrawalReq.traderId);
+
+    // Broadcast real-time Socket.IO updates to trader's private room
+    try {
+      const io = req.app.get('io') || req.io;
+      if (io) {
+        const payload = {
+          type: 'CRYPTO_WITHDRAWAL_APPROVED',
+          systemType: 'CRYPTO',
+          requestId: withdrawalReq.requestId,
+          requestedUSDT,
+          debitUSDT,
+          bonusUSDT,
+          wallet: updatedWallet ? updatedWallet.toValuation(config.usdtInrRate || 105.0) : null,
+          message: `Your withdrawal of ${requestedUSDT} USDT was approved! ${debitUSDT} USDT debited from balance (+1% bonus benefit).`,
+        };
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('crypto_withdrawal_approved', payload);
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('crypto_withdrawal_status_updated', payload);
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('balance_update', payload);
+        io.emit('crypto_withdrawal_updated', payload);
+      }
+    } catch (socketErr) {
+      console.warn('[cryptoController] Socket emit error:', socketErr.message);
+    }
 
     // Notify Trader
     await Notification.sendNotification({
       recipientUserId: withdrawalReq.traderId,
       recipientClientId: withdrawalReq.traderUsername,
       type: 'CRYPTO_WITHDRAWAL_APPROVED',
-      title: 'Crypto Withdrawal Approved',
-      message: `Your withdrawal request for ${requestedUSDT} USDT (₹${withdrawalReq.finalInrPayout.toLocaleString('en-IN')}) has been approved. Payout is being prepared.`,
+      title: 'Crypto Withdrawal Approved (+1% Bonus Benefit)',
+      message: `Your withdrawal request for ${requestedUSDT} USDT (₹${withdrawalReq.finalInrPayout.toLocaleString('en-IN')}) has been approved and settled (${debitUSDT} USDT debited, +${bonusUSDT} USDT 1% bonus funded by platform).`,
       referenceId: withdrawalReq.requestId,
       amount: withdrawalReq.finalInrPayout,
       currency: 'INR',
@@ -975,7 +1078,7 @@ const approveWithdrawal = async (req, res) => {
       traderUsername: withdrawalReq.traderUsername,
       actorId: req.user._id,
       actorRole: 'ADMIN',
-      actionType: 'WITHDRAWAL_APPROVED',
+      actionType: 'WITHDRAWAL_APPROVED_AND_DEBITED',
       requestId: withdrawalReq.requestId,
       details: {
         requestedUSDT,
@@ -984,14 +1087,15 @@ const approveWithdrawal = async (req, res) => {
         payoutINR: withdrawalReq.finalInrPayout,
         notes,
       },
-      description: `Admin ${req.user.username} approved withdrawal ${withdrawalReq.requestId}. ${debitUSDT} USDT remains reserved pending payout completion.`,
+      description: `Admin ${req.user.username} approved withdrawal ${withdrawalReq.requestId}. Debited ${debitUSDT} USDT (99%), funded ${bonusUSDT} USDT (1% bonus). Full payout obligation: ₹${withdrawalReq.finalInrPayout}.`,
       ipAddress: req.ip,
     });
 
     return res.status(200).json({
       success: true,
-      message: `Withdrawal request approved. Reserved USDT (${debitUSDT} USDT) remains locked pending payout completion.`,
+      message: `Withdrawal request approved and ${debitUSDT} USDT successfully debited from wallet (+1% bonus benefit).`,
       data: withdrawalReq,
+      wallet: updatedWallet ? updatedWallet.toValuation(config.usdtInrRate || 105.0) : null,
     });
   } catch (error) {
     console.error('[Approve Crypto Withdrawal Error]:', error);
@@ -1032,15 +1136,22 @@ const verifyAndCompleteWithdrawal = async (req, res) => {
       ? withdrawalReq.bonusUSDT
       : round6(requestedUSDT * 0.01);
 
-    // Atomically debit ONLY the reserved 99% USDT from the trader's wallet and write to ledger
-    await UsdtWallet.finalizeDebitReservedBalance({
-      traderId: withdrawalReq.traderId,
-      clientId: withdrawalReq.traderUsername,
-      amount: debitUSDT,
+    // Atomically debit ONLY if not already debited during admin approval
+    const existingDebit = await BalanceLedger.findOne({
       referenceRequestId: withdrawalReq.requestId,
-      notes: notes || `Crypto Payout of ₹${withdrawalReq.finalInrPayout} (100% full payout: ${requestedUSDT} USDT equivalent) completed. Platform Bonus: +${bonusUSDT} USDT. Ref: ${payoutReference.trim()}`,
-      performedBy: req.user._id,
+      entryType: 'CRYPTO_WITHDRAWAL_DEDUCTED',
     });
+
+    if (!existingDebit) {
+      await UsdtWallet.finalizeDebitReservedBalance({
+        traderId: withdrawalReq.traderId,
+        clientId: withdrawalReq.traderUsername,
+        amount: debitUSDT,
+        referenceRequestId: withdrawalReq.requestId,
+        notes: notes || `Crypto Payout of ₹${withdrawalReq.finalInrPayout} (100% full payout: ${requestedUSDT} USDT equivalent) completed. Platform Bonus: +${bonusUSDT} USDT. Ref: ${payoutReference.trim()}`,
+        performedBy: req.user._id,
+      });
+    }
 
     withdrawalReq.status = 'COMPLETED';
     withdrawalReq.payoutReference = payoutReference.trim();
@@ -1051,6 +1162,24 @@ const verifyAndCompleteWithdrawal = async (req, res) => {
 
     // Broadcast balance update to connected clients
     await broadcastBalanceUpdate(withdrawalReq.traderId);
+
+    // Broadcast real-time Socket.IO updates to trader's private room
+    try {
+      const io = req.app.get('io') || req.io;
+      if (io) {
+        const payload = {
+          type: 'CRYPTO_WITHDRAWAL_REJECTED',
+          systemType: 'CRYPTO',
+          requestId: withdrawalReq.requestId,
+          message: `Your withdrawal of ${requestedUSDT} USDT was rejected. Reserved balance restored.`,
+        };
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('crypto_withdrawal_status_updated', payload);
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('balance_update', payload);
+        io.emit('crypto_withdrawal_updated', payload);
+      }
+    } catch (socketErr) {
+      console.warn('[cryptoController] Socket emit error:', socketErr.message);
+    }
 
     // Record the 1% platform-funded bonus separately for accounting
     await CryptoActivityLog.log({
@@ -1124,10 +1253,10 @@ const rejectWithdrawal = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Withdrawal request not found.' });
     }
 
-    if (['COMPLETED', 'REJECTED'].includes(withdrawalReq.status)) {
+    if (['APPROVED', 'COMPLETED', 'REJECTED'].includes(withdrawalReq.status)) {
       return res.status(400).json({
         success: false,
-        message: `Withdrawal request is already finalized as '${withdrawalReq.status}'.`,
+        message: `Withdrawal request is already '${withdrawalReq.status}' and cannot be rejected.`,
       });
     }
 
@@ -1150,6 +1279,24 @@ const rejectWithdrawal = async (req, res) => {
 
     // Broadcast balance update to connected clients
     await broadcastBalanceUpdate(withdrawalReq.traderId);
+
+    // Broadcast real-time Socket.IO updates to trader's private room
+    try {
+      const io = req.app.get('io') || req.io;
+      if (io) {
+        const payload = {
+          type: 'CRYPTO_WITHDRAWAL_REJECTED',
+          systemType: 'CRYPTO',
+          requestId: withdrawalReq.requestId,
+          message: `Your withdrawal of ${requestedUSDT} USDT was rejected. Reserved balance restored.`,
+        };
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('crypto_withdrawal_status_updated', payload);
+        io.to(`trader_${withdrawalReq.traderId.toString()}`).emit('balance_update', payload);
+        io.emit('crypto_withdrawal_updated', payload);
+      }
+    } catch (socketErr) {
+      console.warn('[cryptoController] Socket emit error:', socketErr.message);
+    }
 
     // Notify Trader
     await Notification.sendNotification({
@@ -1519,6 +1666,7 @@ module.exports = {
   createWithdrawalRequest,
   getTraderWithdrawals,
   getTraderCryptoTransactions,
+  getTraderCryptoWallet,
 
   // Admin Crypto Management
   getAdminCryptoOverview,

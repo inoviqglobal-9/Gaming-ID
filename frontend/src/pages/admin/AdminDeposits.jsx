@@ -879,14 +879,14 @@ export const AdminDeposits = () => {
                   type="number"
                   min="5"
                   max="1440"
-                  value={settings.depositExpiryMinutes || 60}
+                  value={settings.depositExpiryMinutes || 30}
                   onChange={(e) =>
                     setSettings({ ...settings, depositExpiryMinutes: Number(e.target.value) })
                   }
                   className="w-full bg-[#162032] border border-[#22334F] rounded-xl px-3 py-2 text-xs text-white font-mono"
                 />
                 <p className="text-[10px] text-gray-400 mt-1">
-                  Default is 60 minutes. Countdown will display in the trader's payment modal.
+                  Default is 30 minutes. Countdown will display in the trader's payment modal.
                 </p>
               </div>
 

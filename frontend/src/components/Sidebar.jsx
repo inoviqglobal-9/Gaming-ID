@@ -97,7 +97,7 @@ export const Sidebar = ({
   // TRADER NAVIGATION LINKS
   const traderLinks = [
     {
-      label: 'Dashboard',
+      label: 'UPI Dashboard',
       icon: LayoutDashboard,
       route: '/dashboard',
     },
@@ -107,7 +107,7 @@ export const Sidebar = ({
       route: '/payouts',
     },
     {
-      label: 'Applications',
+      label: 'PayIn',
       icon: FileText,
       route: '/trader/applications',
     },
@@ -117,7 +117,7 @@ export const Sidebar = ({
       route: '/deposit-requests',
     },
     {
-      label: 'Requisites',
+      label: 'Bank Account / UPI ID',
       icon: CreditCard,
       route: '/requisites',
     },
@@ -127,7 +127,7 @@ export const Sidebar = ({
       route: '/wallet-check',
     },
     {
-      label: 'Crypto',
+      label: 'Crypto Dashboard',
       icon: Coins,
       route: '/trader/crypto',
     },

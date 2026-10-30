@@ -46,6 +46,8 @@ export const AdminCryptoManagement = () => {
   const [selectedDeposit, setSelectedDeposit] = useState(null);
   const [depositDecisionNotes, setDepositDecisionNotes] = useState('');
   const [depositActionLoading, setDepositActionLoading] = useState(false);
+  const [depositConfirmAction, setDepositConfirmAction] = useState(null); // 'ACCEPT' | 'REJECT' | null
+  const [depositRejectionReason, setDepositRejectionReason] = useState('');
 
   const [withdrawalModalOpen, setWithdrawalModalOpen] = useState(false);
   const [selectedWithdrawal, setSelectedWithdrawal] = useState(null);
@@ -113,18 +115,26 @@ export const AdminCryptoManagement = () => {
     };
   }, [loadData]);
 
-  // Deposit Actions
-  const handleApproveDeposit = async () => {
+  // Deposit Actions (Accept with 3% Bonus & Reject with Reason)
+  const handleConfirmApproveDeposit = async () => {
     if (!selectedDeposit) return;
     try {
       setDepositActionLoading(true);
       const res = await cryptoService.approveDeposit(selectedDeposit._id, depositDecisionNotes);
       if (res.success) {
         const depAmt = selectedDeposit.depositAmountUSDT || selectedDeposit.usdtAmount || 0;
-        const credAmt = selectedDeposit.totalCreditUSDT !== undefined ? selectedDeposit.totalCreditUSDT : depAmt;
+        const bonusAmt = selectedDeposit.bonusAmountUSDT !== undefined && selectedDeposit.bonusAmountUSDT !== null && selectedDeposit.bonusAmountUSDT > 0
+          ? selectedDeposit.bonusAmountUSDT
+          : Math.round(depAmt * 0.03 * 1000000) / 1000000;
+        const credAmt = selectedDeposit.totalCreditUSDT !== undefined && selectedDeposit.totalCreditUSDT > 0
+          ? selectedDeposit.totalCreditUSDT
+          : Math.round((depAmt + bonusAmt) * 1000000) / 1000000;
         const inrEq = selectedDeposit.inrEquivalent !== undefined ? selectedDeposit.inrEquivalent : depAmt * 105;
-        alert(`Deposit approved! Exact ${credAmt.toFixed(2)} USDT (INR Equivalent: ₹${inrEq.toLocaleString('en-IN')}) has been credited to ${selectedDeposit.traderUsername}'s wallet.`);
+
+        alert(`Deposit approved! Total ${credAmt.toFixed(2)} USDT (${depAmt.toFixed(2)} USDT + 3% bonus: ${bonusAmt.toFixed(2)} USDT) credited to ${selectedDeposit.traderUsername}'s wallet.`);
         setDepositModalOpen(false);
+        setDepositConfirmAction(null);
+        setDepositRejectionReason('');
         loadData();
       }
     } catch (err) {
@@ -134,17 +144,22 @@ export const AdminCryptoManagement = () => {
     }
   };
 
-  const handleRejectDeposit = async () => {
+  const handleConfirmRejectDeposit = async () => {
     if (!selectedDeposit) return;
-    const reason = prompt('Please enter the reason for rejecting this deposit:');
-    if (!reason || !reason.trim()) return;
+    const reason = depositRejectionReason.trim();
+    if (!reason) {
+      alert('Rejection reason is required.');
+      return;
+    }
 
     try {
       setDepositActionLoading(true);
-      const res = await cryptoService.rejectDeposit(selectedDeposit._id, reason.trim());
+      const res = await cryptoService.rejectDeposit(selectedDeposit._id, reason);
       if (res.success) {
-        alert('Deposit request rejected.');
+        alert(`Deposit request ${selectedDeposit.requestId} rejected.`);
         setDepositModalOpen(false);
+        setDepositConfirmAction(null);
+        setDepositRejectionReason('');
         loadData();
       }
     } catch (err) {
@@ -521,7 +536,7 @@ export const AdminCryptoManagement = () => {
                 </div>
                 <div className="p-3 bg-[#0B0F19] rounded-xl flex justify-between items-center">
                   <span className="text-gray-400">Crypto Deposit Crediting:</span>
-                  <span className="text-emerald-400 font-bold">Exact 1:1 Credit (0% Fee, 0% Bonus)</span>
+                  <span className="text-emerald-400 font-bold">+3% Bonus Benefit (1 USDT = ₹105)</span>
                 </div>
                 <div className="p-3 bg-[#0B0F19] rounded-xl flex justify-between items-center">
                   <span className="text-gray-400">Crypto Withdrawal Bonus:</span>
@@ -642,6 +657,7 @@ export const AdminCryptoManagement = () => {
                   <th className="p-4">Request ID</th>
                   <th className="p-4">Trader</th>
                   <th className="p-4">Deposit USDT</th>
+                  <th className="p-4">3% Bonus</th>
                   <th className="p-4">Credited USDT</th>
                   <th className="p-4">Fixed Rate</th>
                   <th className="p-4">INR Equivalent</th>
@@ -656,14 +672,19 @@ export const AdminCryptoManagement = () => {
               <tbody className="divide-y divide-[#1F293D]">
                 {filteredDeposits.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="p-8 text-center text-gray-500">
+                    <td colSpan={13} className="p-8 text-center text-gray-500">
                       No deposit requests matching criteria.
                     </td>
                   </tr>
                 ) : (
                   filteredDeposits.map((dep) => {
                     const depAmt = dep.depositAmountUSDT || dep.usdtAmount || 0;
-                    const credAmt = dep.totalCreditUSDT !== undefined ? dep.totalCreditUSDT : (dep.creditedAmountUSDT !== undefined ? dep.creditedAmountUSDT : depAmt);
+                    const bonusAmt = dep.bonusAmountUSDT !== undefined && dep.bonusAmountUSDT !== null && dep.bonusAmountUSDT > 0
+                      ? dep.bonusAmountUSDT
+                      : Math.round(depAmt * 0.03 * 1000000) / 1000000;
+                    const credAmt = dep.totalCreditUSDT !== undefined && dep.totalCreditUSDT > 0
+                      ? dep.totalCreditUSDT
+                      : Math.round((depAmt + bonusAmt) * 1000000) / 1000000;
                     const fixedRate = dep.fixedRate || 105;
                     const inrEq = dep.inrEquivalent !== undefined ? dep.inrEquivalent : Math.round(depAmt * fixedRate * 100) / 100;
 
@@ -672,7 +693,8 @@ export const AdminCryptoManagement = () => {
                         <td className="p-4 font-mono font-semibold text-white">{dep.requestId}</td>
                         <td className="p-4 font-semibold text-gray-200">{dep.traderUsername}</td>
                         <td className="p-4 font-mono font-bold text-white">{depAmt.toFixed(2)} USDT</td>
-                        <td className="p-4 font-mono font-bold text-emerald-400">
+                        <td className="p-4 font-mono font-bold text-emerald-400">+{bonusAmt.toFixed(2)} USDT (+3%)</td>
+                        <td className="p-4 font-mono font-bold text-emerald-300">
                           {credAmt.toFixed(2)} USDT
                         </td>
                         <td className="p-4 font-mono text-blue-400 font-bold">₹{fixedRate}</td>
@@ -1050,133 +1072,273 @@ export const AdminCryptoManagement = () => {
       {selectedDeposit && (
         <Modal
           isOpen={depositModalOpen}
-          onClose={() => setDepositModalOpen(false)}
+          onClose={() => {
+            setDepositModalOpen(false);
+            setDepositConfirmAction(null);
+            setDepositRejectionReason('');
+          }}
           title={`Review Deposit Request (${selectedDeposit.requestId})`}
         >
-          <div className="space-y-4 text-xs font-mono">
-            {/* Summary Grid */}
-            <div className="grid grid-cols-2 gap-3 p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
-              <div>
-                <span className="text-gray-400 block text-[11px]">Trader Username</span>
-                <span className="text-white font-bold">{selectedDeposit.traderUsername}</span>
-              </div>
-              <div>
-                <span className="text-gray-400 block text-[11px]">Current Status</span>
-                <StatusBadge status={selectedDeposit.status} />
-              </div>
-              <div>
-                <span className="text-gray-400 block text-[11px]">Requested Deposit Amount</span>
-                <span className="text-white font-bold font-mono">
-                  {(selectedDeposit.depositAmountUSDT || selectedDeposit.usdtAmount || 0).toFixed(2)} USDT
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-400 block text-[11px]">Fixed Platform Rate</span>
-                <span className="text-blue-400 font-bold font-mono">
-                  ₹{selectedDeposit.fixedRate || 105} / USDT
-                </span>
-              </div>
-              <div className="col-span-2 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex justify-between items-center">
-                <span className="text-emerald-300 font-bold text-xs">Verified USDT to Credit (Exact 1:1):</span>
-                <span className="text-emerald-400 font-bold font-mono text-sm">
-                  {(selectedDeposit.depositAmountUSDT || selectedDeposit.usdtAmount || 0).toFixed(2)} USDT
-                </span>
-              </div>
-              <div className="col-span-2 p-2 bg-[#111827] rounded-lg border border-[#1F293D] flex justify-between items-center text-xs">
-                <span className="text-gray-400">Platform INR Valuation:</span>
-                <span className="text-blue-300 font-bold font-mono">
-                  ₹{((selectedDeposit.inrEquivalent !== undefined ? selectedDeposit.inrEquivalent : (selectedDeposit.depositAmountUSDT || selectedDeposit.usdtAmount || 0) * 105)).toLocaleString('en-IN')}
-                </span>
-              </div>
-            </div>
+          {(() => {
+            const depAmt = selectedDeposit.depositAmountUSDT || selectedDeposit.usdtAmount || 0;
+            const bonusAmt = selectedDeposit.bonusAmountUSDT !== undefined && selectedDeposit.bonusAmountUSDT !== null && selectedDeposit.bonusAmountUSDT > 0
+              ? selectedDeposit.bonusAmountUSDT
+              : Math.round(depAmt * 0.03 * 1000000) / 1000000;
+            const credAmt = selectedDeposit.totalCreditUSDT !== undefined && selectedDeposit.totalCreditUSDT > 0
+              ? selectedDeposit.totalCreditUSDT
+              : Math.round((depAmt + bonusAmt) * 1000000) / 1000000;
+            const fixedRate = selectedDeposit.fixedRate || 105;
+            const inrEq = selectedDeposit.inrEquivalent !== undefined
+              ? selectedDeposit.inrEquivalent
+              : Math.round(depAmt * fixedRate * 100) / 100;
 
-            {/* Blockchain Details */}
-            <div className="grid grid-cols-2 gap-3 p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
-              <div>
-                <span className="text-gray-400 block text-[11px]">Blockchain Network</span>
-                <span className="text-white font-bold font-mono">{selectedDeposit.network || 'TRC20'}</span>
-              </div>
-              <div>
-                <span className="text-gray-400 block text-[11px]">Destination Wallet</span>
-                <span className="text-emerald-400 font-mono text-[11px] truncate block" title={selectedDeposit.destinationWalletAddress || selectedDeposit.qrSnapshot?.walletAddress}>
-                  {selectedDeposit.destinationWalletAddress || selectedDeposit.qrSnapshot?.walletAddress || 'TX7D7vH3qV8kYq4eR9P4dE8vL3kYq4eR9P'}
-                </span>
-              </div>
-            </div>
-
-            {/* TXID */}
-            {(selectedDeposit.txHash || selectedDeposit.utr) && (
-              <div className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D] space-y-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-400 text-[11px]">Transaction Hash / TXID</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(selectedDeposit.txHash || selectedDeposit.utr);
-                      alert('TXID copied to clipboard.');
-                    }}
-                    className="text-[10px] text-blue-400 hover:underline"
-                  >
-                    Copy TXID
-                  </button>
+            return (
+              <div className="space-y-4 text-xs font-mono">
+                {/* Summary Grid */}
+                <div className="grid grid-cols-2 gap-3 p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Trader Username</span>
+                    <span className="text-white font-bold">{selectedDeposit.traderUsername}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Current Status</span>
+                    <StatusBadge status={selectedDeposit.status} />
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Deposit Amount</span>
+                    <span className="text-white font-bold font-mono">
+                      {depAmt.toFixed(2)} USDT
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">3% Deposit Bonus</span>
+                    <span className="text-emerald-400 font-bold font-mono">
+                      +{bonusAmt.toFixed(2)} USDT (3%)
+                    </span>
+                  </div>
+                  <div className="col-span-2 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex justify-between items-center">
+                    <span className="text-emerald-300 font-bold text-xs">Total USDT to Credit:</span>
+                    <span className="text-emerald-400 font-bold font-mono text-sm">
+                      {credAmt.toFixed(2)} USDT
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Fixed Platform Rate</span>
+                    <span className="text-blue-400 font-bold font-mono">
+                      ₹{fixedRate} / USDT
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Platform INR Valuation</span>
+                    <span className="text-blue-300 font-bold font-mono">
+                      ₹{inrEq.toLocaleString('en-IN')}
+                    </span>
+                  </div>
                 </div>
-                <div className="font-mono text-white text-xs break-all bg-[#111827] p-2 rounded-lg border border-[#1F293D]">
-                  {selectedDeposit.txHash || selectedDeposit.utr}
+
+                {/* Blockchain Details */}
+                <div className="grid grid-cols-2 gap-3 p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Blockchain Network</span>
+                    <span className="text-white font-bold font-mono">{selectedDeposit.network || 'TRC20'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Destination Wallet</span>
+                    <span
+                      className="text-emerald-400 font-mono text-[11px] truncate block"
+                      title={selectedDeposit.destinationWalletAddress || selectedDeposit.qrSnapshot?.walletAddress}
+                    >
+                      {selectedDeposit.destinationWalletAddress || selectedDeposit.qrSnapshot?.walletAddress || 'TX7D7vH3qV8kYq4eR9P4dE8vL3kYq4eR9P'}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            )}
 
-            {/* Proof screenshot if uploaded */}
-            {selectedDeposit.paymentProofUrl && (
-              <div>
-                <span className="text-gray-400 block text-[11px] mb-1">Payment Proof Screenshot</span>
-                <div className="max-h-56 rounded-xl overflow-hidden border border-[#1F293D] bg-black">
-                  <img
-                    src={selectedDeposit.paymentProofUrl}
-                    alt="Payment Proof"
-                    className="w-full object-contain max-h-56"
-                  />
-                </div>
-              </div>
-            )}
+                {/* TXID */}
+                {(selectedDeposit.txHash || selectedDeposit.utr) && (
+                  <div className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D] space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-[11px]">Transaction Hash / TXID</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(selectedDeposit.txHash || selectedDeposit.utr);
+                          alert('TXID copied to clipboard.');
+                        }}
+                        className="text-[10px] text-blue-400 hover:underline"
+                      >
+                        Copy TXID
+                      </button>
+                    </div>
+                    <div className="font-mono text-white text-xs break-all bg-[#111827] p-2 rounded-lg border border-[#1F293D]">
+                      {selectedDeposit.txHash || selectedDeposit.utr}
+                    </div>
+                  </div>
+                )}
 
-            {/* Decision Notes */}
-            <div>
-              <label className="block text-gray-400 text-[11px] mb-1">
-                Verification / Audit Notes (Optional)
-              </label>
-              <input
-                type="text"
-                value={depositDecisionNotes}
-                onChange={(e) => setDepositDecisionNotes(e.target.value)}
-                placeholder="e.g. Verified on TronScan, 20 confirmations"
-                className="w-full bg-[#0B0F19] border border-[#1F293D] rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
-              />
-            </div>
+                {/* Proof screenshot if uploaded */}
+                {selectedDeposit.paymentProofUrl && (
+                  <div>
+                    <span className="text-gray-400 block text-[11px] mb-1">Payment Proof Screenshot</span>
+                    <div className="max-h-56 rounded-xl overflow-hidden border border-[#1F293D] bg-black">
+                      <img
+                        src={selectedDeposit.paymentProofUrl}
+                        alt="Payment Proof"
+                        className="w-full object-contain max-h-56"
+                      />
+                    </div>
+                  </div>
+                )}
 
-            {selectedDeposit.status === 'PENDING_VERIFICATION' && (
-              <div className="pt-2 flex items-center justify-end gap-3 border-t border-[#1F293D]">
-                <button
-                  type="button"
-                  disabled={depositActionLoading}
-                  onClick={handleRejectDeposit}
-                  className="px-4 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 font-semibold text-xs"
-                >
-                  Reject Deposit
-                </button>
-                <button
-                  type="button"
-                  disabled={depositActionLoading}
-                  onClick={handleApproveDeposit}
-                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-md shadow-emerald-600/30"
-                >
-                  {depositActionLoading
-                    ? 'Crediting Wallet...'
-                    : `Verify & Credit ${(selectedDeposit.depositAmountUSDT || selectedDeposit.usdtAmount || 0).toFixed(2)} USDT`}
-                </button>
+                {/* If already completed or rejected */}
+                {selectedDeposit.status === 'COMPLETED' && (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl space-y-1 text-emerald-300">
+                    <span className="block font-bold text-xs">Deposit Approved & Credited</span>
+                    <p className="text-[11px] text-gray-300">
+                      Credited <span className="text-emerald-400 font-bold">{credAmt.toFixed(2)} USDT</span> ({depAmt.toFixed(2)} USDT + 3% bonus: {bonusAmt.toFixed(2)} USDT) on {selectedDeposit.approvedAt || selectedDeposit.verifiedAt ? new Date(selectedDeposit.approvedAt || selectedDeposit.verifiedAt).toLocaleString() : 'N/A'}.
+                    </p>
+                  </div>
+                )}
+
+                {selectedDeposit.status === 'REJECTED' && (
+                  <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl space-y-1 text-rose-300">
+                    <span className="block font-bold text-xs">Deposit Request Rejected</span>
+                    <p className="text-[11px] text-gray-300">
+                      Reason: <span className="text-white font-medium">{selectedDeposit.rejectionReason || 'No reason specified'}</span>
+                    </p>
+                  </div>
+                )}
+
+                {/* Verification / Audit Notes */}
+                {selectedDeposit.status === 'PENDING_VERIFICATION' && !depositConfirmAction && (
+                  <div>
+                    <label className="block text-gray-400 text-[11px] mb-1">
+                      Verification / Audit Notes (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={depositDecisionNotes}
+                      onChange={(e) => setDepositDecisionNotes(e.target.value)}
+                      placeholder="e.g. Verified on TronScan, 20 confirmations"
+                      className="w-full bg-[#0B0F19] border border-[#1F293D] rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                )}
+
+                {/* ACTION FLOWS (PENDING_VERIFICATION) */}
+                {selectedDeposit.status === 'PENDING_VERIFICATION' && (
+                  <>
+                    {depositConfirmAction === 'ACCEPT' ? (
+                      <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-3">
+                        <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Confirm Deposit Approval (+3% Bonus)</span>
+                        </div>
+                        <p className="text-gray-300 text-xs">
+                          Are you sure you want to approve request <span className="font-bold text-white">{selectedDeposit.requestId}</span>?
+                        </p>
+                        <div className="space-y-1 text-[11px] text-gray-300 bg-[#0B0F19] p-2.5 rounded-lg border border-[#1F293D]">
+                          <div className="flex justify-between">
+                            <span>Trader:</span>
+                            <span className="text-white font-bold">{selectedDeposit.traderUsername}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Base Deposit Amount:</span>
+                            <span className="text-white font-bold">{depAmt.toFixed(2)} USDT</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>3% Bonus Benefit:</span>
+                            <span className="text-emerald-400 font-bold">+{bonusAmt.toFixed(2)} USDT</span>
+                          </div>
+                          <div className="flex justify-between font-bold text-emerald-300 border-t border-[#1F293D] pt-1">
+                            <span>Total Credited USDT:</span>
+                            <span>{credAmt.toFixed(2)} USDT</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setDepositConfirmAction(null)}
+                            className="px-3 py-1.5 rounded-lg bg-[#111827] border border-[#1F293D] text-gray-300 hover:text-white"
+                          >
+                            Back
+                          </button>
+                          <button
+                            type="button"
+                            disabled={depositActionLoading}
+                            onClick={handleConfirmApproveDeposit}
+                            className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-md shadow-emerald-600/30"
+                          >
+                            {depositActionLoading ? 'Crediting Wallet...' : 'Confirm Approval & Credit Wallet'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : depositConfirmAction === 'REJECT' ? (
+                      <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl space-y-3">
+                        <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
+                          <XCircle className="w-4 h-4" />
+                          <span>Reject Deposit Request</span>
+                        </div>
+                        <p className="text-gray-300 text-xs">
+                          Please enter the rejection reason for request <span className="font-bold text-white">{selectedDeposit.requestId}</span>:
+                        </p>
+                        <textarea
+                          rows={2}
+                          value={depositRejectionReason}
+                          onChange={(e) => setDepositRejectionReason(e.target.value)}
+                          placeholder="Rejection reason (Required, e.g. Transaction Hash not verified on blockchain explorer)"
+                          className="w-full bg-[#0B0F19] border border-rose-500/40 rounded-xl p-2.5 text-white text-xs font-mono focus:outline-none focus:border-rose-400"
+                        />
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDepositConfirmAction(null);
+                              setDepositRejectionReason('');
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-[#111827] border border-[#1F293D] text-gray-300 hover:text-white"
+                          >
+                            Back
+                          </button>
+                          <button
+                            type="button"
+                            disabled={depositActionLoading || !depositRejectionReason.trim()}
+                            onClick={handleConfirmRejectDeposit}
+                            className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-md shadow-rose-600/30 disabled:opacity-50"
+                          >
+                            {depositActionLoading ? 'Rejecting...' : 'Confirm Rejection'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="pt-2 flex items-center justify-end gap-3 border-t border-[#1F293D]">
+                        <button
+                          type="button"
+                          disabled={depositActionLoading}
+                          onClick={() => {
+                            setDepositRejectionReason('');
+                            setDepositConfirmAction('REJECT');
+                          }}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 font-semibold text-xs transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Reject</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={depositActionLoading}
+                          onClick={() => setDepositConfirmAction('ACCEPT')}
+                          className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-600/30 transition-all"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Accept (+3% Bonus)</span>
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
         </Modal>
       )}
 

@@ -376,6 +376,7 @@ export const cryptoService = {
   submitWithdrawal: (formData) => apiFetch('/crypto/withdrawals', { method: 'POST', body: formData }),
   getTraderWithdrawals: () => apiFetch('/crypto/withdrawals'),
   getTraderTransactions: () => apiFetch('/crypto/transactions'),
+  getWallet: () => apiFetch('/crypto/wallet'),
 
   // Admin Crypto Management
   getAdminOverview: () => apiFetch('/crypto/admin/overview'),
@@ -483,8 +484,8 @@ export const traderService = {
   getDashboardVolume: (period = '7D') => apiFetch(`/trader/dashboard/volume?period=${period}`),
   getTransactionStatus: (period = '7D') => apiFetch(`/trader/dashboard/transaction-status?period=${period}`),
   getRecentApplications: (limit = 10) => apiFetch(`/trader/dashboard/recent-applications?limit=${limit}`),
-  // USDT Wallet & Transactions (Phase 13 & 14)
-  getUsdtWallet: () => apiFetch('/trader/wallet/usdt'),
+  // USDT Wallet & Transactions (Default to NORMAL module subledger)
+  getUsdtWallet: (module = 'NORMAL') => apiFetch(`/trader/wallet/usdt${module ? `?module=${encodeURIComponent(module)}` : ''}`),
   getUsdtTransactions: (params = {}) => {
     const query = new URLSearchParams(params).toString();
     return apiFetch(`/trader/wallet/transactions${query ? `?${query}` : ''}`);

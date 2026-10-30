@@ -30,6 +30,12 @@ const depositRequestSchema = new mongoose.Schema(
       default: 'INR',
       required: true,
     },
+    systemType: {
+      type: String,
+      enum: ['NORMAL', 'CRYPTO'],
+      default: 'NORMAL',
+      index: true,
+    },
     depositType: {
       type: String,
       enum: ['WORKING_DEPOSIT', 'SECURITY_DEPOSIT'],
@@ -40,11 +46,26 @@ const depositRequestSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    scannerConfigId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ScannerConfig',
+      default: null,
+    },
+    scannerId: {
+      type: String,
+      default: '',
+    },
+    qrImageUrl: {
+      type: String,
+      default: '',
+    },
     destinationWalletSnapshot: {
       address: { type: String, default: '' },
       network: { type: String, default: '' },
       currency: { type: String, default: '' },
       label: { type: String, default: '' },
+      scannerId: { type: String, default: '' },
+      qrImageUrl: { type: String, default: '' },
     },
     txHash: {
       type: String,
@@ -172,6 +193,7 @@ depositRequestSchema.index({ clientId: 1, createdAt: -1 });
 depositRequestSchema.index({ userId: 1, createdAt: -1 });
 depositRequestSchema.index({ status: 1, createdAt: -1 });
 depositRequestSchema.index({ depositType: 1, createdAt: -1 });
+depositRequestSchema.index({ systemType: 1, createdAt: -1 });
 
 const DepositRequest = mongoose.model('DepositRequest', depositRequestSchema);
 

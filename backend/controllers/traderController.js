@@ -26,7 +26,9 @@ const getDashboardSummary = async (req, res) => {
       PayoutRequest.find({ userId, createdAt: { $gte: startDate } }),
     ]);
 
-    const usdtBalance = parseFloat(usdtWallet.availableBalance.toString()) || 0.0;
+    const normalValuation = await usdtWallet.toSubledgerValuation('NORMAL');
+    const usdtBalance = parseFloat(normalValuation.availableBalance) || 0.0;
+    const securityDepositBalance = parseFloat(normalValuation.securityDepositBalance) || 0.0;
 
     // PayIn Statistics
     const confirmedPayIns = payIns.filter((p) =>
@@ -64,6 +66,7 @@ const getDashboardSummary = async (req, res) => {
         balance: {
           inr: inrBalance,
           usdt: usdtBalance,
+          securityDeposit: securityDepositBalance,
         },
         totalVolume,
         totalTransactions,

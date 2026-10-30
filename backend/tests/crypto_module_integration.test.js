@@ -88,12 +88,12 @@ test.beforeEach(async () => {
 });
 
 // TEST 1: Rates & Bonus configuration
-test('Crypto: Fixed Base Rate ₹105, 0% deposit bonus (0% fee, exact 1:1), 0% withdrawal fee, +1% withdrawal bonus', async () => {
+test('Crypto: Fixed Base Rate ₹105, 3% deposit bonus (+3%), 0% withdrawal fee, +1% withdrawal bonus', async () => {
   const res = await request(app).get('/api/crypto/rates');
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.body.success, true);
   assert.strictEqual(res.body.baseRate, 105);
-  assert.strictEqual(res.body.depositBonusPercent, 0);
+  assert.strictEqual(res.body.depositBonusPercent, 3);
   assert.strictEqual(res.body.depositFeePercent, 0);
   assert.strictEqual(res.body.withdrawalFeePercent, 0);
   assert.strictEqual(res.body.withdrawalBonusPercent, 1);
@@ -112,28 +112,30 @@ test('Crypto: GET /api/crypto/withdrawal-config returns 10 fixed amounts and 1% 
   assert.deepStrictEqual(res.body.fixedWithdrawalAmounts, [100, 200, 300, 500, 800, 1000, 2000, 3000, 5000, 10000]);
 });
 
-// TEST 3: Dynamic Deposit Live Quotation (Exact 1:1 Credit, Fixed ₹105 Rate, INR Equivalent)
-test('Crypto: Live quotation for dynamic deposits (100 USDT and 750 USDT) calculates exact 1:1 credit and INR equivalent at ₹105', async () => {
-  // Case A: 100 USDT -> 100 USDT credit, inrEquivalent = 10,500
+// TEST 3: Dynamic Deposit Live Quotation (+3% Bonus, Fixed ₹105 Rate, INR Equivalent)
+test('Crypto: Live quotation for dynamic deposits (100 USDT and 750 USDT) calculates 3% bonus and INR equivalent at ₹105', async () => {
+  // Case A: 100 USDT -> 3 USDT bonus, 103 USDT credit, inrEquivalent = 10,500
   const res100 = await request(app).get('/api/crypto/quote?type=DEPOSIT&amount=100');
   assert.strictEqual(res100.status, 200);
   assert.strictEqual(res100.body.success, true);
   assert.strictEqual(res100.body.type, 'DEPOSIT');
   assert.strictEqual(res100.body.depositAmountUSDT, 100);
-  assert.strictEqual(res100.body.bonusPercent, 0);
-  assert.strictEqual(res100.body.bonusAmountUSDT, 0);
-  assert.strictEqual(res100.body.totalCreditUSDT, 100);
-  assert.strictEqual(res100.body.expectedUsdtCredit, 100);
+  assert.strictEqual(res100.body.bonusPercent, 3);
+  assert.strictEqual(res100.body.bonusAmountUSDT, 3);
+  assert.strictEqual(res100.body.totalCreditUSDT, 103);
+  assert.strictEqual(res100.body.expectedUsdtCredit, 103);
   assert.strictEqual(res100.body.inrEquivalent, 10500);
   assert.strictEqual(res100.body.feePercent, 0);
 
-  // Case B: 750 USDT -> 750 USDT credit, inrEquivalent = 78,750
+  // Case B: 750 USDT -> 22.5 USDT bonus, 772.5 USDT credit, inrEquivalent = 78,750
   const res750 = await request(app).get('/api/crypto/quote?type=DEPOSIT&amount=750');
   assert.strictEqual(res750.status, 200);
   assert.strictEqual(res750.body.success, true);
   assert.strictEqual(res750.body.depositAmountUSDT, 750);
-  assert.strictEqual(res750.body.bonusAmountUSDT, 0);
-  assert.strictEqual(res750.body.totalCreditUSDT, 750);
+  assert.strictEqual(res750.body.bonusPercent, 3);
+  assert.strictEqual(res750.body.bonusAmountUSDT, 22.5);
+  assert.strictEqual(res750.body.totalCreditUSDT, 772.5);
+  assert.strictEqual(res750.body.expectedUsdtCredit, 772.5);
   assert.strictEqual(res750.body.inrEquivalent, 78750);
 });
 
@@ -244,8 +246,8 @@ test('Crypto: Admin deletes active QR, trader receives null active QR and deposi
   assert.ok(blockedDep.body.message.includes('No active USDT deposit wallet is currently available'));
 });
 
-// TEST 6: Trader submits dynamic deposit request with TXID and exact 1:1 credit calculation
-test('Crypto: Trader submits dynamic 750 USDT deposit request with TXID, network, and exact 1:1 credit', async () => {
+// TEST 6: Trader submits dynamic deposit request with TXID and 3% deposit bonus
+test('Crypto: Trader submits dynamic 750 USDT deposit request with TXID, network, and 3% bonus', async () => {
   const depRes = await request(app)
     .post('/api/crypto/deposits')
     .set('Cookie', trader1Cookie)
@@ -258,16 +260,16 @@ test('Crypto: Trader submits dynamic 750 USDT deposit request with TXID, network
   assert.strictEqual(depRes.body.success, true);
   assert.strictEqual(depRes.body.data.status, 'PENDING_VERIFICATION');
   assert.strictEqual(depRes.body.data.depositAmountUSDT, 750);
-  assert.strictEqual(depRes.body.data.bonusPercent, 0);
-  assert.strictEqual(depRes.body.data.bonusAmountUSDT, 0);
-  assert.strictEqual(depRes.body.data.totalCreditUSDT, 750);
+  assert.strictEqual(depRes.body.data.bonusPercent, 3);
+  assert.strictEqual(depRes.body.data.bonusAmountUSDT, 22.5);
+  assert.strictEqual(depRes.body.data.totalCreditUSDT, 772.5);
   assert.strictEqual(depRes.body.data.inrEquivalent, 78750);
   assert.strictEqual(depRes.body.data.network, 'TRC20');
   assert.strictEqual(depRes.body.data.txHash, '0xabc123789456def9988');
 });
 
-// TEST 6B: Dynamic fractional deposit amount supported (e.g. 125.50 USDT)
-test('Crypto: Dynamic fractional deposit amount (125.50 USDT) calculates exact 1:1 credit (125.50) and INR equivalent (13,177.50)', async () => {
+// TEST 6B: Dynamic fractional deposit amount supported with 3% bonus (e.g. 125.50 USDT)
+test('Crypto: Dynamic fractional deposit amount (125.50 USDT) calculates 3% bonus (3.765 USDT) and credit (129.265 USDT)', async () => {
   const depRes = await request(app)
     .post('/api/crypto/deposits')
     .set('Cookie', trader1Cookie)
@@ -278,22 +280,23 @@ test('Crypto: Dynamic fractional deposit amount (125.50 USDT) calculates exact 1
   assert.strictEqual(depRes.status, 201);
   assert.strictEqual(depRes.body.success, true);
   assert.strictEqual(depRes.body.data.depositAmountUSDT, 125.5);
-  assert.strictEqual(depRes.body.data.bonusAmountUSDT, 0);
-  assert.strictEqual(depRes.body.data.totalCreditUSDT, 125.5);
+  assert.strictEqual(depRes.body.data.bonusPercent, 3);
+  assert.strictEqual(depRes.body.data.bonusAmountUSDT, 3.765);
+  assert.strictEqual(depRes.body.data.totalCreditUSDT, 129.265);
   assert.strictEqual(depRes.body.data.inrEquivalent, 13177.5);
 });
 
-// TEST 7: Admin approves deposit and credits exact verified USDT (750 USDT)
-test('Crypto: Admin approves deposit request: atomically credits exact verified USDT (750 USDT) to wallet and ledger', async () => {
+// TEST 7: Admin approves deposit and credits base deposit + 3% bonus (750 USDT -> 772.5 USDT)
+test('Crypto: Admin approves deposit request: atomically credits 772.5 USDT (750 + 3% bonus) to wallet and ledger', async () => {
   const dep = await CryptoDepositRequest.create({
     requestId: 'CDP-TEST-001',
     traderId: trader1Id,
     traderUsername: 'trader101',
     depositAmountUSDT: 750,
     usdtAmount: 750,
-    bonusPercent: 0,
-    bonusAmountUSDT: 0,
-    totalCreditUSDT: 750,
+    bonusPercent: 3,
+    bonusAmountUSDT: 22.5,
+    totalCreditUSDT: 772.5,
     fixedRate: 105.0,
     inrEquivalent: 78750.0,
     network: 'TRC20',
@@ -311,19 +314,65 @@ test('Crypto: Admin approves deposit request: atomically credits exact verified 
   assert.strictEqual(approveRes.status, 200);
   assert.strictEqual(approveRes.body.success, true);
   assert.strictEqual(approveRes.body.data.status, 'COMPLETED');
+  assert.ok(approveRes.body.data.approvedBy);
+  assert.ok(approveRes.body.data.approvedAt);
 
-  // Verify trader wallet is credited with exact 750 USDT
+  // Verify trader wallet is credited with 772.5 USDT (750 + 3% bonus)
   const wallet = await UsdtWallet.findOne({ traderId: trader1Id });
-  assert.strictEqual(parseFloat(wallet.availableBalance.toString()), 750);
-  assert.strictEqual(parseFloat(wallet.totalBalance.toString()), 750);
+  assert.strictEqual(parseFloat(wallet.availableBalance.toString()), 772.5);
+  assert.strictEqual(parseFloat(wallet.totalBalance.toString()), 772.5);
 
-  // Verify BalanceLedger has entry
+  // Verify BalanceLedger has entry with 772.5 USDT
   const ledgerEntry = await BalanceLedger.findOne({
     referenceRequestId: dep.requestId,
     entryType: 'CRYPTO_DEPOSIT_CONFIRMED',
   });
   assert.ok(ledgerEntry);
-  assert.strictEqual(ledgerEntry.amount, 750);
+  assert.strictEqual(ledgerEntry.amount, 772.5);
+});
+
+// TEST 7B: Admin rejects deposit with reason; zero wallet credit
+test('Crypto: Admin rejects deposit request with required reason: sets REJECTED and zero balance credited', async () => {
+  const dep = await CryptoDepositRequest.create({
+    requestId: 'CDP-TEST-REJECT-001',
+    traderId: trader1Id,
+    traderUsername: 'trader101',
+    depositAmountUSDT: 500,
+    usdtAmount: 500,
+    bonusPercent: 3,
+    bonusAmountUSDT: 15,
+    totalCreditUSDT: 515,
+    fixedRate: 105.0,
+    inrEquivalent: 52500.0,
+    network: 'TRC20',
+    destinationWalletAddress: 'TX7D7vH3qV8kYq4eR9P4dE8vL3kYq4eR9P',
+    txHash: '0xinvalidhash999',
+    status: 'PENDING_VERIFICATION',
+  });
+
+  // Rejection requires reason
+  const emptyReasonRes = await request(app)
+    .post(`/api/crypto/admin/deposits/${dep._id}/reject`)
+    .set('Cookie', adminCookie)
+    .send({ reason: '   ' });
+  assert.strictEqual(emptyReasonRes.status, 400);
+
+  // Reject with valid reason
+  const rejectRes = await request(app)
+    .post(`/api/crypto/admin/deposits/${dep._id}/reject`)
+    .set('Cookie', adminCookie)
+    .send({ reason: 'TXID not found on TRON explorer after 2 hours' });
+
+  assert.strictEqual(rejectRes.status, 200);
+  assert.strictEqual(rejectRes.body.success, true);
+  assert.strictEqual(rejectRes.body.data.status, 'REJECTED');
+  assert.strictEqual(rejectRes.body.data.rejectionReason, 'TXID not found on TRON explorer after 2 hours');
+  assert.ok(rejectRes.body.data.rejectedBy);
+  assert.ok(rejectRes.body.data.rejectedAt);
+
+  // Verify trader wallet has zero credit
+  const wallet = await UsdtWallet.findOne({ traderId: trader1Id });
+  assert.strictEqual(parseFloat(wallet?.availableBalance?.toString() || '0'), 0);
 });
 
 // TEST 8: Unsupported withdrawal amounts are rejected
@@ -448,12 +497,20 @@ test('Crypto: A balance below 990 USDT (e.g. 989 USDT) blocks a 1000 USDT reques
 });
 
 // TEST 13: Approval preserves the reserved balance (Task 12 case 10)
-test('Crypto: Admin approval preserves the reserved balance and sets status APPROVED', async () => {
-  const w = await UsdtWallet.getOrCreate(trader1Id);
-  w.availableBalance = mongoose.Types.Decimal128.fromString('10.000000');
-  w.lockedBalance = mongoose.Types.Decimal128.fromString('990.000000');
-  w.totalBalance = mongoose.Types.Decimal128.fromString('1000.000000');
-  await w.save();
+test('Crypto: Admin approval settles the 99% debit and sets status APPROVED', async () => {
+  await UsdtWallet.creditWallet({
+    traderId: trader1Id,
+    clientId: 'trader101',
+    amount: 1000,
+    referenceRequestId: 'TEST-INIT-APPROVE-1000',
+    notes: 'Initial test funding',
+    performedBy: adminId,
+  });
+
+  await UsdtWallet.reserveBalance({
+    traderId: trader1Id,
+    amount: 990,
+  });
 
   const wd = await CryptoWithdrawalRequest.create({
     requestId: 'CWD-TEST-APPROVE-1',
@@ -485,11 +542,11 @@ test('Crypto: Admin approval preserves the reserved balance and sets status APPR
   assert.strictEqual(approveRes.body.success, true);
   assert.strictEqual(approveRes.body.data.status, 'APPROVED');
 
-  // Verify wallet locked balance is preserved at 990 USDT
+  // Verify wallet debit is settled: available is 10, locked is 0, total is 10
   const wallet = await UsdtWallet.findOne({ traderId: trader1Id });
   assert.strictEqual(parseFloat(wallet.availableBalance.toString()), 10);
-  assert.strictEqual(parseFloat(wallet.lockedBalance.toString()), 990);
-  assert.strictEqual(parseFloat(wallet.totalBalance.toString()), 1000);
+  assert.strictEqual(parseFloat(wallet.lockedBalance.toString()), 0);
+  assert.strictEqual(parseFloat(wallet.totalBalance.toString()), 10);
 });
 
 // TEST 14: Payment completion finalizes 99% debit exactly once and records bonus (Task 12 case 12)

@@ -17,6 +17,7 @@ router.get('/settings', requireAuth, getTraderDepositSettings);
 router.post('/', requireAuth, requireClient, requirePasswordChanged, createDeposit);
 router.get('/my', requireAuth, requireClient, getMyDeposits);
 router.get('/:id', requireAuth, getTraderDepositRequestById);
+router.get('/:id/payment-details', requireAuth, getTraderDepositRequestById);
 router.post(
   '/:id/submit-evidence',
   requireAuth,

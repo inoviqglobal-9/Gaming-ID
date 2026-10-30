@@ -22,6 +22,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import { io } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { depositService } from '../../services/api';
 
@@ -112,7 +113,40 @@ export const DepositPage = () => {
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+
+    // Socket.IO real-time listener for active scanner and deposit status updates
+    let socket = null;
+    if (user && user._id) {
+      try {
+        socket = io('/', { transports: ['websocket', 'polling'] });
+        socket.emit('join_trader_room', user._id);
+
+        socket.on('deposit_scanner_updated', () => {
+          loadData(true);
+        });
+        socket.on('scanner_config_updated', () => {
+          loadData(true);
+        });
+        socket.on('deposit_status_update', (payload) => {
+          loadData(true);
+          if (payload && payload.requestId) {
+            setActiveRequest((prev) =>
+              prev && prev.requestId === payload.requestId ? { ...prev, status: payload.status } : prev
+            );
+          }
+        });
+        socket.on('deposit_updated', () => {
+          loadData(true);
+        });
+      } catch (err) {
+        console.warn('[DepositPage Socket.IO Error]:', err);
+      }
+    }
+
+    return () => {
+      if (socket) socket.disconnect();
+    };
+  }, [loadData, user]);
 
   // 15-second Auto-refresh interval
   useEffect(() => {
@@ -138,11 +172,15 @@ export const DepositPage = () => {
     const calcTimeLeft = () => {
       const expMs = new Date(activeRequest.expiresAt).getTime();
       const nowMs = Date.now();
-      const diffSec = Math.max(0, Math.floor((expMs - nowMs) / 1000));
+      const diffSec = Math.max(0, Math.ceil((expMs - nowMs) / 1000));
       return diffSec;
     };
 
-    setTimeLeftSec(calcTimeLeft());
+    const initial = calcTimeLeft();
+    setTimeLeftSec(initial);
+    if (initial <= 0 && activeRequest.status !== 'EXPIRED') {
+      setActiveRequest((prev) => (prev ? { ...prev, status: 'EXPIRED' } : null));
+    }
 
     const timer = setInterval(() => {
       const remaining = calcTimeLeft();
@@ -154,7 +192,7 @@ export const DepositPage = () => {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [paymentModalOpen, activeRequest?.expiresAt]);
+  }, [paymentModalOpen, activeRequest?.expiresAt, activeRequest?.status]);
 
   const formatTimer = (seconds) => {
     if (seconds <= 0) return '00:00';
@@ -328,7 +366,7 @@ export const DepositPage = () => {
 
     if (!activeRequest) return;
 
-    if (timeLeftSec <= 0 && activeRequest.status === 'EXPIRED') {
+    if (timeLeftSec <= 0 || activeRequest.status === 'EXPIRED') {
       setSubmitError('This deposit request has expired. Please create a new request.');
       return;
     }
@@ -456,7 +494,14 @@ export const DepositPage = () => {
   const assignedWalletAddress =
     activeRequest?.destinationWalletSnapshot?.address ||
     activeRequest?.wallet ||
-    'TX7D7vH3qV8kYq4eR9P4dE8vL3kYq4eR9P';
+    settings?.activeScanner?.walletAddress ||
+    '';
+
+  const assignedQrImageUrl =
+    activeRequest?.destinationWalletSnapshot?.qrImageUrl ||
+    activeRequest?.qrImageUrl ||
+    settings?.activeScanner?.qrImageUrl ||
+    '';
 
   return (
     <div className="space-y-6">
@@ -792,6 +837,19 @@ export const DepositPage = () => {
                   <span>Destination Network</span>
                   <span className="text-emerald-400 font-medium font-mono">TRON (TRC20)</span>
                 </div>
+                {settings?.activeScanner ? (
+                  <div className="flex justify-between text-gray-400">
+                    <span>Active Destination</span>
+                    <span className="text-blue-400 font-medium font-mono">
+                      {settings.activeScanner.walletAddress.slice(0, 6)}...{settings.activeScanner.walletAddress.slice(-4)}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex justify-between text-amber-400 text-[11px]">
+                    <span>Active Destination</span>
+                    <span className="font-semibold text-rose-400">Unavailable</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-gray-400 border-t border-[#22334F] pt-1.5">
                   <span className="font-semibold text-gray-300">Total Payable</span>
                   <span className="font-mono font-bold text-white">
@@ -799,6 +857,13 @@ export const DepositPage = () => {
                   </span>
                 </div>
               </div>
+
+              {!settings?.activeScanner && currency === 'USDT' && (
+                <div className="p-2.5 bg-amber-950/30 border border-amber-500/30 rounded-xl text-[11px] text-amber-300 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Deposit payment destination is currently unavailable. Admin has not activated a payment scanner.</span>
+                </div>
+              )}
 
               {/* Buttons */}
               <div className="flex items-center justify-end gap-3 pt-2">
@@ -811,8 +876,8 @@ export const DepositPage = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={creating}
-                  className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-lg shadow-blue-600/30 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                  disabled={creating || (currency === 'USDT' && !settings?.activeScanner)}
+                  className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-lg shadow-blue-600/30 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {creating ? (
                     <>
@@ -953,39 +1018,63 @@ export const DepositPage = () => {
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 block mb-2">
                   Deposit wallet address — USDT TRC20
                 </span>
-                <div className="flex items-center gap-3">
-                  {/* Generated QR Code from backend-approved destination address */}
-                  <div className="p-1.5 bg-white rounded-lg shrink-0 shadow-md">
-                    <QRCodeSVG
-                      value={assignedWalletAddress}
-                      size={64}
-                      level="M"
-                      includeMargin={false}
-                    />
-                  </div>
+                {assignedWalletAddress && assignedWalletAddress !== '-' ? (
+                  <div className="flex items-center gap-3">
+                    {/* Uploaded QR Image from active scanner, or SVG fallback */}
+                    <div className="p-1 bg-white rounded-lg shrink-0 shadow-md w-18 h-18 flex items-center justify-center overflow-hidden">
+                      {assignedQrImageUrl ? (
+                        <img
+                          src={assignedQrImageUrl}
+                          alt="USDT TRC20 QR Code"
+                          className="w-16 h-16 object-contain"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const fallback = document.getElementById(`qr-svg-fallback-${activeRequest?._id}`);
+                            if (fallback) fallback.style.display = 'block';
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        id={`qr-svg-fallback-${activeRequest?._id}`}
+                        style={{ display: assignedQrImageUrl ? 'none' : 'block' }}
+                      >
+                        <QRCodeSVG
+                          value={assignedWalletAddress}
+                          size={64}
+                          level="M"
+                          includeMargin={false}
+                        />
+                      </div>
+                    </div>
 
-                  <div className="flex-1 min-w-0">
-                    <p className="font-mono text-[11px] text-gray-200 break-all select-all leading-snug">
-                      {assignedWalletAddress}
-                    </p>
-                    <button
-                      onClick={() => handleCopy(assignedWalletAddress, 'wallet')}
-                      className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors"
-                    >
-                      {copiedWallet ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span className="text-emerald-400">Address copied!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>Copy wallet address</span>
-                        </>
-                      )}
-                    </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-mono text-[11px] text-gray-200 break-all select-all leading-snug">
+                        {assignedWalletAddress}
+                      </p>
+                      <button
+                        onClick={() => handleCopy(assignedWalletAddress, 'wallet')}
+                        className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors"
+                      >
+                        {copiedWallet ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span className="text-emerald-400">Address copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copy wallet address</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="p-3 bg-amber-950/30 border border-amber-500/30 rounded-lg text-xs text-amber-300 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>Payment destination unavailable. Please wait for an active scanner to be assigned by administrator.</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1027,7 +1116,7 @@ export const DepositPage = () => {
                         : 'border-amber-500/50 focus:border-amber-500'
                       : 'border-[#22334F] focus:border-blue-500'
                   }`}
-                  disabled={timeLeftSec <= 0 && activeRequest.status === 'EXPIRED'}
+                  disabled={timeLeftSec <= 0 || activeRequest.status === 'EXPIRED'}
                 />
                 <p className="text-[11px] text-gray-500 mt-1">
                   TRON transaction hash must be 64 hex characters
@@ -1110,7 +1199,8 @@ export const DepositPage = () => {
                     submitting ||
                     !isTxHashValid ||
                     (!screenshotFile && !activeRequest.screenshot) ||
-                    (timeLeftSec <= 0 && activeRequest.status === 'EXPIRED')
+                    timeLeftSec <= 0 ||
+                    activeRequest.status === 'EXPIRED'
                   }
                   className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-[#1F293D] disabled:text-gray-500 disabled:cursor-not-allowed text-white text-xs font-semibold shadow-lg shadow-blue-600/30 transition-all flex items-center gap-2 cursor-pointer"
                 >

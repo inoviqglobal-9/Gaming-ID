@@ -65,6 +65,7 @@ router.get('/deposit-settings', getTraderDepositSettings);
 router.get('/deposit-requests', getTraderDepositRequests);
 router.post('/deposit-requests', createTraderDepositRequest);
 router.get('/deposit-requests/:id', getTraderDepositRequestById);
+router.get('/deposit-requests/:id/payment-details', getTraderDepositRequestById);
 router.post(
   '/deposit-requests/:id/submit-evidence',
   uploadDepositEvidence.single('screenshot'),

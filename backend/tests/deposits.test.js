@@ -6,6 +6,7 @@ const User = require('../models/User');
 const DepositRequest = require('../models/DepositRequest');
 const DepositConfig = require('../models/DepositConfig');
 const BalanceLedger = require('../models/BalanceLedger');
+const ScannerConfig = require('../models/ScannerConfig');
 const { setupTestDB, cleanupTestDB, clearCollections } = require('./setup');
 
 test.before(async () => {
@@ -18,6 +19,20 @@ test.after(async () => {
 
 test.beforeEach(async () => {
   await clearCollections();
+
+  await ScannerConfig.create({
+    scannerId: 'QR-TEST-ACTIVE',
+    scannerName: 'Active USDT TRC20 Scanner',
+    merchantName: 'Active USDT TRC20 Scanner',
+    merchantIdentifier: 'TPF1ZetizM3m9nnu7xkh2EczsL2fZ6b8Nd',
+    walletAddress: 'TPF1ZetizM3m9nnu7xkh2EczsL2fZ6b8Nd',
+    qrImageUrl: '/uploads/scanner-active.jpeg',
+    network: 'TRC20',
+    currency: 'USDT',
+    status: 'ACTIVE',
+    isActive: true,
+    isPublished: true,
+  });
 });
 
 // Helper to create and authenticate a user
@@ -233,7 +248,7 @@ test('Deposits: Admin approval credits verified funds to BalanceLedger idempoten
   const ledgerEntries = await BalanceLedger.find({ referenceRequestId: requestId });
   assert.strictEqual(ledgerEntries.length, 1);
   assert.strictEqual(ledgerEntries[0].amount, 1000);
-  assert.strictEqual(ledgerEntries[0].entryType, 'DEPOSIT_CONFIRMED');
+  assert.strictEqual(ledgerEntries[0].entryType, 'SECURITY_DEPOSIT_CONFIRMED');
 
   // Re-approving cannot credit twice (idempotency)
   const doubleApproveRes = await request(app)

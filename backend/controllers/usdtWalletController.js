@@ -24,9 +24,12 @@ const generateAdjustmentId = () => {
 const getTraderUsdtWallet = async (req, res) => {
   try {
     const userId = req.user._id;
+    const requestedModule = req.query.module ? req.query.module.toUpperCase() : null; // 'NORMAL' or 'CRYPTO'
     // Always sync with BalanceLedger to reflect any recently confirmed deposits
     const wallet = await UsdtWallet.syncWithLedger(userId);
-    const valuation = wallet.toValuation(config.usdtInrRate || FIXED_RATE);
+    const valuation = requestedModule
+      ? await wallet.toSubledgerValuation(requestedModule, config.usdtInrRate || FIXED_RATE)
+      : wallet.toValuation(config.usdtInrRate || FIXED_RATE);
 
     return res.status(200).json(valuation);
   } catch (error) {
@@ -45,8 +48,22 @@ const getTraderUsdtTransactions = async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const skip = (page - 1) * limit;
+    const requestedModule = req.query.module ? req.query.module.toUpperCase() : null;
 
     const query = { userId, currency: 'USDT' };
+    if (requestedModule === 'NORMAL') {
+      query.$or = [
+        { systemType: 'NORMAL' },
+        { systemType: { $exists: false } },
+        { systemType: null },
+        { entryType: { $nin: ['CRYPTO_DEPOSIT_CONFIRMED', 'CRYPTO_WITHDRAWAL_DEDUCTED', 'CRYPTO_WITHDRAWAL_BONUS'] } },
+      ];
+    } else if (requestedModule === 'CRYPTO') {
+      query.$or = [
+        { systemType: 'CRYPTO' },
+        { entryType: { $in: ['CRYPTO_DEPOSIT_CONFIRMED', 'CRYPTO_WITHDRAWAL_DEDUCTED', 'CRYPTO_WITHDRAWAL_BONUS'] } },
+      ];
+    }
     const [total, entries] = await Promise.all([
       BalanceLedger.countDocuments(query),
       BalanceLedger.find(query)

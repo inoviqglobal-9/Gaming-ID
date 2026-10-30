@@ -24,6 +24,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
+import { io } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { traderService } from '../../services/api';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -50,7 +51,7 @@ export const ClientDashboard = ({ navigate }) => {
         traderService.getDashboardVolume(activePeriod),
         traderService.getTransactionStatus(activePeriod),
         traderService.getRecentApplications(10),
-        traderService.getUsdtWallet().catch(() => null),
+        traderService.getUsdtWallet('NORMAL').catch(() => null),
       ]);
 
       if (sumRes && sumRes.success) setSummary(sumRes.data);
@@ -71,6 +72,25 @@ export const ClientDashboard = ({ navigate }) => {
 
   useEffect(() => {
     fetchDashboardData(period);
+
+    // Live Socket.IO connection for targeted real-time updates
+    let socket = null;
+    if (user && user._id) {
+      try {
+        socket = io('/', { transports: ['websocket', 'polling'] });
+        socket.emit('join_trader_room', user._id);
+        socket.on('deposit_status_update', () => {
+          fetchDashboardData(period, true);
+          refreshUser();
+        });
+        socket.on('balance_update', () => {
+          fetchDashboardData(period, true);
+          refreshUser();
+        });
+      } catch (err) {
+        console.warn('[Trader Socket.IO Error]:', err);
+      }
+    }
 
     let es = null;
     try {
@@ -94,9 +114,10 @@ export const ClientDashboard = ({ navigate }) => {
 
     return () => {
       if (es) es.close();
+      if (socket) socket.disconnect();
       window.removeEventListener('focus', onFocus);
     };
-  }, [period, fetchDashboardData, refreshUser]);
+  }, [period, fetchDashboardData, refreshUser, user]);
 
   const handlePeriodChange = (newPeriod) => {
     if (newPeriod !== period) {
@@ -214,6 +235,21 @@ export const ClientDashboard = ({ navigate }) => {
                     ₹{Number(usdtWallet?.inrEquivalent || ((Number(usdtWallet?.availableBalance || balances?.USDT || 0)) * 105)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                 </div>
+              </div>
+
+              {/* Security Deposit Balance Section */}
+              <div className="mt-2.5 pt-2 border-t border-[#1F293D]/70">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-gray-400 uppercase tracking-wider text-[10px]">
+                    SECURITY DEPOSIT
+                  </span>
+                  <span className="font-bold text-amber-400 font-mono text-xs">
+                    {Number(usdtWallet?.securityDepositBalance ?? summary?.balance?.securityDeposit ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-500 mt-0.5">
+                  Approved Security Deposit • Not Available for Withdrawal
+                </p>
               </div>
             </div>
             <div className="p-3 rounded-xl bg-blue-600/10 border border-blue-500/20 text-blue-400 shrink-0">

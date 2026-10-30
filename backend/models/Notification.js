@@ -22,6 +22,7 @@ const notificationSchema = new mongoose.Schema(
         'DEMO_PAYMENT_CONFIRMED',
         'SCANNER_CHANGED',
         'DEPOSIT_CONFIRMED',
+        'SECURITY_DEPOSIT_CONFIRMED',
         'DEPOSIT_REJECTED',
         'DEPOSIT_SUBMITTED',
         'USDT_CREDITED',

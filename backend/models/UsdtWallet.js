@@ -27,6 +27,11 @@ const usdtWalletSchema = new mongoose.Schema(
       default: () => mongoose.Types.Decimal128.fromString('0.000000'),
       required: true,
     },
+    securityDepositBalance: {
+      type: mongoose.Schema.Types.Decimal128,
+      default: () => mongoose.Types.Decimal128.fromString('0.000000'),
+      required: true,
+    },
     totalBalance: {
       type: mongoose.Schema.Types.Decimal128,
       default: () => mongoose.Types.Decimal128.fromString('0.000000'),
@@ -63,10 +68,12 @@ usdtWalletSchema.methods.toValuation = function (overrideRate) {
   const rate = overrideRate ? Number(overrideRate) : Number(config.usdtInrRate || 105.0);
   const availStr = this.availableBalance ? this.availableBalance.toString() : '0.000000';
   const lockedStr = this.lockedBalance ? this.lockedBalance.toString() : '0.000000';
+  const secStr = this.securityDepositBalance ? this.securityDepositBalance.toString() : '0.000000';
   const totalStr = this.totalBalance ? this.totalBalance.toString() : '0.000000';
 
   const availNum = parseFloat(availStr) || 0;
   const lockedNum = parseFloat(lockedStr) || 0;
+  const secNum = parseFloat(secStr) || 0;
   const totalNum = parseFloat(totalStr) || (availNum + lockedNum);
 
   // Exact display-only calculation: INR Equivalent = Available USDT Balance * 105
@@ -79,7 +86,71 @@ usdtWalletSchema.methods.toValuation = function (overrideRate) {
     currency: 'USDT',
     availableBalance: toFixed6(availNum),
     lockedBalance: toFixed6(lockedNum),
+    securityDepositBalance: toFixed6(secNum),
     totalBalance: toFixed6(totalNum),
+    walletStatus: this.walletStatus,
+    exchangeRate: {
+      baseCurrency: 'USDT',
+      quoteCurrency: 'INR',
+      rate: toFixed2(rate),
+      type: 'FIXED',
+      label: 'Fixed Platform Rate',
+    },
+    inrEquivalent,
+    updatedAt: this.updatedAt,
+  };
+};
+
+// Method to format module-specific subledger valuation (NORMAL or CRYPTO) with custody reconciliation
+usdtWalletSchema.methods.toSubledgerValuation = async function (systemType, overrideRate) {
+  const rate = overrideRate ? Number(overrideRate) : Number(config.usdtInrRate || 105.0);
+  const totalAvailNum = parseFloat(this.availableBalance ? this.availableBalance.toString() : '0') || 0;
+  const totalLockedNum = parseFloat(this.lockedBalance ? this.lockedBalance.toString() : '0') || 0;
+  const secStr = this.securityDepositBalance ? this.securityDepositBalance.toString() : '0.000000';
+  const secNum = parseFloat(secStr) || 0;
+  const totalNum = parseFloat(this.totalBalance ? this.totalBalance.toString() : '0') || (totalAvailNum + totalLockedNum);
+
+  if (!systemType || systemType === 'ALL') {
+    return this.toValuation(rate);
+  }
+
+  const BalanceLedger = mongoose.model('BalanceLedger');
+  const subledgerNet = await BalanceLedger.calculateSubledgerBalance(this.traderId, 'USDT', systemType);
+  const securityDepositNet = await BalanceLedger.calculateSecurityDepositBalance(this.traderId, 'USDT');
+
+  let displayAvail = totalAvailNum;
+  let displayLocked = totalLockedNum;
+  let displayTotal = totalNum;
+
+  if (systemType === 'NORMAL') {
+    displayAvail = Math.max(0, subledgerNet);
+    displayLocked = 0; // Normal system has no locked crypto withdrawals
+    displayTotal = displayAvail;
+  } else if (systemType === 'CRYPTO') {
+    const activeCryptoLocked = await this.constructor.calculateLockedBalance(this.traderId);
+    displayLocked = activeCryptoLocked;
+    displayAvail = Math.max(0, subledgerNet - activeCryptoLocked);
+    displayTotal = displayAvail + displayLocked;
+  }
+
+  const inrEquivalent = toFixed2(displayAvail * rate);
+
+  return {
+    success: true,
+    walletId: this._id,
+    traderId: this.traderId,
+    currency: 'USDT',
+    systemType,
+    availableBalance: toFixed6(displayAvail),
+    lockedBalance: toFixed6(displayLocked),
+    securityDepositBalance: systemType === 'NORMAL' ? toFixed6(securityDepositNet) : '0.000000',
+    totalBalance: toFixed6(displayTotal),
+    custodyReconciliation: {
+      totalCustodyAvailable: toFixed6(totalAvailNum),
+      totalCustodyLocked: toFixed6(totalLockedNum),
+      totalCustodySecurityDeposit: toFixed6(secNum),
+      totalCustodyBalance: toFixed6(totalNum),
+    },
     walletStatus: this.walletStatus,
     exchangeRate: {
       baseCurrency: 'USDT',
@@ -105,11 +176,13 @@ usdtWalletSchema.statics.getOrCreate = async function (traderId) {
   const initialBal = Math.max(0, ledgerUsdtBalance || 0);
 
   try {
+    const initialSecurity = await BalanceLedger.calculateSecurityDepositBalance(traderId, 'USDT');
     wallet = await this.create({
       traderId,
       currency: 'USDT',
       availableBalance: mongoose.Types.Decimal128.fromString(toFixed6(initialBal)),
       lockedBalance: mongoose.Types.Decimal128.fromString('0.000000'),
+      securityDepositBalance: mongoose.Types.Decimal128.fromString(toFixed6(initialSecurity || 0)),
       totalBalance: mongoose.Types.Decimal128.fromString(toFixed6(initialBal)),
       walletStatus: 'ACTIVE',
     });
@@ -123,27 +196,58 @@ usdtWalletSchema.statics.getOrCreate = async function (traderId) {
   }
 };
 
-// Static helper to sync wallet balance with BalanceLedger
+// Static helper to calculate real-time verified locked balance from active pending withdrawals
+usdtWalletSchema.statics.calculateLockedBalance = async function (traderId) {
+  try {
+    const CryptoWithdrawalRequest =
+      mongoose.models.CryptoWithdrawalRequest || require('./CryptoWithdrawalRequest');
+    const pendingWithdrawals = await CryptoWithdrawalRequest.find({
+      traderId,
+      status: { $in: ['PENDING_REVIEW', 'PENDING', 'PAYOUT_PROCESSING'] },
+    }).lean();
+
+    const lockedSum = pendingWithdrawals.reduce((sum, w) => {
+      const debit = w.balanceDebitUSDT !== undefined
+        ? w.balanceDebitUSDT
+        : (w.debitAmountUSDT !== undefined
+          ? w.debitAmountUSDT
+          : ((w.requestedAmountUSDT || w.usdtAmount || 0) * 0.99));
+      return sum + (debit || 0);
+    }, 0);
+
+    return Number(lockedSum.toFixed(6));
+  } catch (err) {
+    console.warn('[calculateLockedBalance Warning]:', err.message);
+    return 0;
+  }
+};
+
+// Static helper to sync wallet balance with BalanceLedger and active reservations
 usdtWalletSchema.statics.syncWithLedger = async function (traderId) {
   const wallet = await this.getOrCreate(traderId);
   const ledgerBalance = await BalanceLedger.calculateAvailableBalance(traderId, 'USDT');
-  const lockedNum = parseFloat(wallet.lockedBalance.toString()) || 0;
-  const availNum = Math.max(0, ledgerBalance);
-  const totalNum = availNum + lockedNum;
+  const activeLocked = await this.calculateLockedBalance(traderId);
+  const activeSecurity = await BalanceLedger.calculateSecurityDepositBalance(traderId, 'USDT');
+
+  // Available balance in custody = Settled ledger balance - Active locked reservations
+  const availNum = Math.max(0, ledgerBalance - activeLocked);
+  const totalNum = availNum + activeLocked;
 
   wallet.availableBalance = mongoose.Types.Decimal128.fromString(toFixed6(availNum));
+  wallet.lockedBalance = mongoose.Types.Decimal128.fromString(toFixed6(activeLocked));
+  wallet.securityDepositBalance = mongoose.Types.Decimal128.fromString(toFixed6(activeSecurity));
   wallet.totalBalance = mongoose.Types.Decimal128.fromString(toFixed6(totalNum));
   await wallet.save();
   return wallet;
 };
 
 // Static helper to credit wallet atomically with ledger protection
-// Static helper to credit wallet atomically with ledger protection
 usdtWalletSchema.statics.creditWallet = async function ({
   traderId,
   clientId,
   amount,
   entryType = 'ADMIN_ADJUSTMENT',
+  systemType,
   referenceRequestId,
   notes,
   performedBy,
@@ -164,6 +268,7 @@ usdtWalletSchema.statics.creditWallet = async function ({
     clientId,
     currency: 'USDT',
     entryType: entryType || 'ADMIN_ADJUSTMENT',
+    systemType: systemType || (entryType && entryType.startsWith('CRYPTO_') ? 'CRYPTO' : 'NORMAL'),
     amount: numAmount,
     referenceRequestId,
     notes: notes || 'Admin Authorized USDT Credit',
@@ -238,7 +343,7 @@ usdtWalletSchema.statics.releaseReservedBalance = async function ({ traderId, am
   return wallet;
 };
 
-// Static helper to finalize debit of reserved balance after payout verification
+// Static helper to finalize debit of reserved balance after payout verification or admin approval
 usdtWalletSchema.statics.finalizeDebitReservedBalance = async function ({
   traderId,
   clientId,
@@ -255,9 +360,11 @@ usdtWalletSchema.statics.finalizeDebitReservedBalance = async function ({
   const wallet = await this.getOrCreate(traderId);
   const curAvail = parseFloat(wallet.availableBalance.toString()) || 0;
   const curLocked = parseFloat(wallet.lockedBalance.toString()) || 0;
-  if (curLocked < numAmount) {
+
+  // Verify total available or reserved balance can cover this debit
+  if (curLocked + curAvail < numAmount) {
     throw new Error(
-      `Insufficient locked USDT balance for debit. Locked: ${curLocked.toFixed(6)} USDT, Debit: ${numAmount.toFixed(6)} USDT`
+      `Insufficient wallet balance for debit. Available: ${curAvail.toFixed(6)} USDT, Locked: ${curLocked.toFixed(6)} USDT, Required: ${numAmount.toFixed(6)} USDT`
     );
   }
 
@@ -267,6 +374,7 @@ usdtWalletSchema.statics.finalizeDebitReservedBalance = async function ({
     clientId,
     currency: 'USDT',
     entryType: 'CRYPTO_WITHDRAWAL_DEDUCTED',
+    systemType: 'CRYPTO',
     amount: -numAmount,
     referenceRequestId,
     notes: notes || 'Crypto Withdrawal Payout Completed',
@@ -274,9 +382,20 @@ usdtWalletSchema.statics.finalizeDebitReservedBalance = async function ({
   });
 
   // 2. Decrement locked and total balances
-  const newLocked = Math.max(0, curLocked - numAmount);
-  const newTotal = curAvail + newLocked;
+  // If already reserved (curLocked >= numAmount), only reduce lockedBalance without second available deduction
+  // If not previously reserved or partially reserved, reduce locked first then available for remaining deficit
+  let newLocked = curLocked;
+  let newAvail = curAvail;
+  if (curLocked >= numAmount) {
+    newLocked = Math.max(0, curLocked - numAmount);
+  } else {
+    const deficit = numAmount - curLocked;
+    newLocked = 0;
+    newAvail = Math.max(0, curAvail - deficit);
+  }
+  const newTotal = newAvail + newLocked;
 
+  wallet.availableBalance = mongoose.Types.Decimal128.fromString(toFixed6(newAvail));
   wallet.lockedBalance = mongoose.Types.Decimal128.fromString(toFixed6(newLocked));
   wallet.totalBalance = mongoose.Types.Decimal128.fromString(toFixed6(newTotal));
   await wallet.save();
@@ -290,6 +409,7 @@ usdtWalletSchema.statics.debitWallet = async function ({
   clientId,
   amount,
   entryType = 'ADMIN_ADJUSTMENT',
+  systemType,
   referenceRequestId,
   notes,
   performedBy,
@@ -317,6 +437,7 @@ usdtWalletSchema.statics.debitWallet = async function ({
     clientId,
     currency: 'USDT',
     entryType: entryType || 'ADMIN_ADJUSTMENT',
+    systemType: systemType || (entryType && entryType.startsWith('CRYPTO_') ? 'CRYPTO' : 'NORMAL'),
     amount: -numAmount,
     referenceRequestId,
     notes: notes || 'Admin Authorized USDT Debit',

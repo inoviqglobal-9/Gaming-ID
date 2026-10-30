@@ -119,6 +119,29 @@ const scannerConfigSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    walletAddress: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    activatedAt: {
+      type: Date,
+      default: null,
+    },
+    activatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    deactivatedAt: {
+      type: Date,
+      default: null,
+    },
+    deactivatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     archivedAt: {
       type: Date,
       default: null,
@@ -140,6 +163,11 @@ scannerConfigSchema.pre('save', function (next) {
     this.assetUrl = this.qrImageUrl;
   } else if (this.assetUrl && !this.qrImageUrl) {
     this.qrImageUrl = this.assetUrl;
+  }
+  if (this.merchantIdentifier && !this.walletAddress) {
+    this.walletAddress = this.merchantIdentifier;
+  } else if (this.walletAddress && !this.merchantIdentifier) {
+    this.merchantIdentifier = this.walletAddress;
   }
   next();
 });

@@ -9,7 +9,7 @@ const depositConfigSchema = new mongoose.Schema(
     minDepositAmountInr: { type: Number, default: 1000 },
     maxDepositAmountInr: { type: Number, default: 5000000 },
     allowedCurrencies: { type: [String], default: ['USDT', 'INR'] },
-    depositExpiryMinutes: { type: Number, default: 120 },
+    depositExpiryMinutes: { type: Number, default: 30 },
     destinationWallets: [
       {
         currency: { type: String, default: 'USDT' },

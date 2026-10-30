@@ -168,14 +168,23 @@ router.get('/wallet-check/statistics', getAdminWalletCheckStatistics);
 router.get('/wallet-check', getAllAdminWalletChecks);
 router.get('/wallet-check/:id', getAdminWalletCheckById);
 
-// Admin Crypto Withdrawal Management (Task 10)
+// Admin Crypto Deposit & Withdrawal Management (Task 10)
 const {
+  getAdminDeposits,
+  approveDeposit,
+  rejectDeposit,
   getAdminWithdrawals,
   getWithdrawalById,
   approveWithdrawal,
   verifyAndCompleteWithdrawal,
   rejectWithdrawal,
 } = require('../controllers/cryptoController');
+
+router.get('/crypto/deposits', getAdminDeposits);
+router.post('/crypto/deposits/:id/approve', approveDeposit);
+router.patch('/crypto/deposits/:id/approve', approveDeposit);
+router.post('/crypto/deposits/:id/reject', rejectDeposit);
+router.patch('/crypto/deposits/:id/reject', rejectDeposit);
 
 router.get('/crypto/withdrawals', getAdminWithdrawals);
 router.get('/crypto/withdrawals/:id', getWithdrawalById);

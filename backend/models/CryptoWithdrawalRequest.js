@@ -23,6 +23,12 @@ const cryptoWithdrawalRequestSchema = new mongoose.Schema(
       type: String,
       default: 'CRYPTO_WITHDRAWAL',
     },
+    systemType: {
+      type: String,
+      enum: ['NORMAL', 'CRYPTO'],
+      default: 'CRYPTO',
+      index: true,
+    },
     // Full requested USDT amount (e.g. 1000)
     usdtAmount: {
       type: Number,
@@ -176,6 +182,7 @@ const cryptoWithdrawalRequestSchema = new mongoose.Schema(
 );
 
 cryptoWithdrawalRequestSchema.index({ traderId: 1, createdAt: -1 });
+cryptoWithdrawalRequestSchema.index({ systemType: 1, createdAt: -1 });
 
 const CryptoWithdrawalRequest = mongoose.model(
   'CryptoWithdrawalRequest',

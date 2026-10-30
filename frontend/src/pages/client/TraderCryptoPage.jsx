@@ -19,11 +19,14 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { io } from 'socket.io-client';
+import { useAuth } from '../../context/AuthContext';
 import { cryptoService, traderService } from '../../services/api';
 import { StatusBadge } from '../../components/StatusBadge';
 import { Modal } from '../../components/Modal';
 
 export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) => {
+  const { user } = useAuth();
   // Determine active tab based on route or state
   const getInitialTab = () => {
     if (currentRoute === '/trader/crypto/deposit') return 'DEPOSIT';
@@ -80,7 +83,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
     try {
       setRefreshing(true);
       const [walletRes, ratesRes, qrRes, txRes] = await Promise.all([
-        traderService.getUsdtWallet().catch(() => null),
+        cryptoService.getWallet().catch(() => traderService.getUsdtWallet('CRYPTO')).catch(() => null),
         cryptoService.getRates().catch(() => null),
         cryptoService.getActiveQR().catch(() => null),
         cryptoService.getTraderTransactions().catch(() => null),
@@ -105,6 +108,23 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
 
   useEffect(() => {
     loadData();
+
+    // Live Socket.IO connection for private real-time updates
+    let socket = null;
+    if (user && user._id) {
+      try {
+        socket = io('/', { transports: ['websocket', 'polling'] });
+        socket.emit('join_trader_room', user._id);
+        socket.on('deposit_status_update', (data) => {
+          loadData();
+        });
+        socket.on('balance_update', () => {
+          loadData();
+        });
+      } catch (err) {
+        console.warn('[Trader Socket.IO Error]:', err);
+      }
+    }
 
     // Live Server-Sent Events (SSE) synchronization for published/updated QR
     let es = null;
@@ -146,9 +166,10 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
 
     return () => {
       if (es) es.close();
+      if (socket) socket.disconnect();
       clearInterval(interval);
     };
-  }, [loadData]);
+  }, [loadData, user]);
 
   const copyToClipboard = (text, key) => {
     navigator.clipboard.writeText(text);
@@ -156,10 +177,12 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
     setTimeout(() => setCopiedText(''), 2000);
   };
 
-  // Calculations for Deposit Live Calculator (Exact 1:1 Credit, Fixed ₹105 Platform Rate, Dynamic Amount)
+  // Calculations for Deposit Live Calculator (Dynamic User Amount + 3% Automatic Platform Bonus)
   const numDep = parseFloat(depositAmount) || 0;
   const fixedRate = Number(rates.baseRate || 105.0);
-  const depExpectedCreditUsdt = numDep;
+  const depBonusPercent = 3.0;
+  const depBonusAmountUsdt = Math.round((numDep * 0.03) * 1000000) / 1000000;
+  const depExpectedCreditUsdt = Math.round((numDep * 1.03) * 1000000) / 1000000;
   const depInrEquivalent = Math.round((numDep * fixedRate) * 100) / 100;
 
   // Calculations for Withdrawal Live Calculator (+1% Platform Bonus)
@@ -221,7 +244,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
       const res = await cryptoService.submitDeposit(formData);
       if (res.success) {
         setDepositSuccessMsg(
-          `Deposit request ${res.data.requestId} submitted for ${numDep} USDT. You will receive ${numDep.toFixed(2)} USDT (INR Equivalent: ₹${depInrEquivalent.toLocaleString('en-IN')}) upon verification.`
+          `Deposit request ${res.data.requestId} submitted for ${numDep} USDT. You will receive ${depExpectedCreditUsdt.toFixed(2)} USDT (${numDep} USDT + 3% bonus: ${depBonusAmountUsdt.toFixed(2)} USDT) upon Admin verification.`
         );
         setDepositAmount('');
         setDepositTxHash('');
@@ -351,7 +374,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
             <span className="text-xs font-normal text-blue-400 font-sans">Fixed Rate</span>
           </div>
           <div className="mt-2 text-[11px] text-gray-400">
-            Exact 1:1 Deposit Crediting (0% Fee, 0% Bonus)
+            Deposits receive +3% bonus (e.g. 100 USDT deposit = 103 USDT credited)
           </div>
         </div>
 
@@ -439,9 +462,9 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 <ArrowDownLeft className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Crypto Deposit (TRC20)</h3>
+                <h3 className="text-lg font-bold text-white">Crypto Deposit (+3% Bonus)</h3>
                 <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                  Deposit USDT directly via TRC20 blockchain transfer with exact 1:1 crediting and fixed platform valuation at ₹105 / USDT.
+                  Deposit USDT directly via TRC20 blockchain transfer with an automatic +3% platform bonus benefit upon Admin approval and fixed platform valuation at ₹105 / USDT.
                 </p>
               </div>
 
@@ -454,13 +477,13 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   <span>Fixed Platform Rate:</span>
                   <span>₹105 / USDT</span>
                 </div>
-                <div className="flex justify-between text-gray-400">
-                  <span>Deposit Fee:</span>
-                  <span className="text-emerald-400 font-bold">0% (Free)</span>
+                <div className="flex justify-between text-purple-400">
+                  <span>Deposit Bonus (3%):</span>
+                  <span className="font-bold">+3% Platform Benefit</span>
                 </div>
                 <div className="flex justify-between text-emerald-400 font-bold border-t border-[#1F293D] pt-1">
                   <span>Total USDT Credited:</span>
-                  <span>100% of Deposit Amount</span>
+                  <span>103% of Deposit Amount</span>
                 </div>
               </div>
 
@@ -471,7 +494,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 }}
                 className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2"
               >
-                <span>Proceed to Crypto Deposit</span>
+                <span>Proceed to Crypto Deposit (+3% Bonus)</span>
                 <ArrowDownLeft className="w-4 h-4" />
               </button>
             </div>
@@ -526,7 +549,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
             <div>
               <strong className="block text-white font-semibold">Crypto Policy:</strong>
               <span>
-                All crypto deposits receive exact 1:1 USDT credit upon blockchain verification at the fixed platform rate of ₹105 / USDT (0% fee, 0% bonus). Ensure you send exact USDT on TRON (TRC20) and supply your valid TXID. Crypto withdrawals enjoy a +1% platform bonus with 100% full payout obligation.
+                All crypto deposits receive a +3% platform bonus upon Admin verification at the fixed platform rate of ₹105 / USDT (e.g. 100 USDT deposit = 103 USDT credited; 500 = 515; 1000 = 1030). Ensure you send exact USDT on TRON (TRC20) and supply your valid TXID. Crypto withdrawals enjoy a +1% platform bonus with 100% full payout obligation.
               </span>
             </div>
           </div>
@@ -581,7 +604,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 </p>
               </div>
 
-              {/* Exact 1:1 Live Calculation Card */}
+              {/* Dynamic 3% Bonus Live Calculation Card */}
               <div className="p-4 bg-[#0B0F19] border border-[#1F293D] rounded-xl space-y-2.5 text-xs font-mono shadow-inner">
                 <div className="flex justify-between text-gray-300">
                   <span>Deposit Amount:</span>
@@ -595,10 +618,16 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                     {numDep > 0 ? numDep.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
                   </span>
                 </div>
+                <div className="flex justify-between text-purple-400">
+                  <span>Deposit Bonus (+3%):</span>
+                  <span className="font-bold text-sm">
+                    +{numDep > 0 ? depBonusAmountUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
+                  </span>
+                </div>
                 <div className="flex justify-between text-emerald-400 border-t border-[#1F293D] pt-2 font-bold text-sm">
-                  <span>Expected USDT Credit:</span>
+                  <span>Total Wallet Credit (103%):</span>
                   <span className="text-emerald-400 font-bold text-base">
-                    {numDep > 0 ? numDep.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
+                    {numDep > 0 ? depExpectedCreditUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
                   </span>
                 </div>
                 <div className="flex justify-between text-blue-400 border-t border-[#1F293D] pt-2 font-bold text-sm">
@@ -607,8 +636,8 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                     ₹{numDep > 0 ? depInrEquivalent.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                   </span>
                 </div>
-                <div className="p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[11px] text-blue-300 leading-relaxed font-sans mt-1">
-                  <strong>Exact 1:1 Crediting:</strong> You receive 100% of your verified USDT deposit directly into your balance (0% fee, 0% bonus). Platform INR conversion is fixed at ₹{fixedRate} / USDT.
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 leading-relaxed font-sans mt-1">
+                  <strong>3% Deposit Bonus:</strong> You receive 103% of your verified USDT deposit credited to your balance upon Admin verification (+3% bonus funded by platform). Platform conversion rate is fixed at ₹{fixedRate} / USDT.
                 </div>
               </div>
 
@@ -718,7 +747,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                     : submittingDeposit
                     ? 'Submitting Deposit Request...'
                     : numDep > 0
-                    ? `Submit Deposit Request (Credit ${numDep.toFixed(2)} USDT)`
+                    ? `Submit Deposit Request (+3% Bonus: Credit ${depExpectedCreditUsdt.toFixed(2)} USDT)`
                     : 'Enter an Amount to Submit Deposit'}
                 </span>
               </button>
@@ -793,10 +822,17 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   </span>
                 </div>
 
-                <div className="flex justify-between items-center text-emerald-400 border-t border-[#1F293D] pt-2 font-semibold">
-                  <span>Expected USDT Credit:</span>
+                <div className="flex justify-between items-center text-purple-400 border-t border-[#1F293D] pt-2 font-semibold">
+                  <span>Deposit Bonus (+3%):</span>
                   <span className="font-mono text-sm">
-                    {numDep > 0 ? numDep.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
+                    +{numDep > 0 ? depBonusAmountUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center text-emerald-400 border-t border-[#1F293D] pt-2 font-semibold">
+                  <span>Total USDT to Credit:</span>
+                  <span className="font-mono text-sm font-bold">
+                    {numDep > 0 ? depExpectedCreditUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
                   </span>
                 </div>
 
@@ -1089,9 +1125,19 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   transactions.map((tx) => {
                     const isWd = tx.transactionType === 'WITHDRAWAL';
                     const numAmt = tx.depositAmountUSDT || tx.requestedUSDT || tx.usdtAmount || 0;
-                    const bonusUsdt = tx.bonusUSDT !== undefined ? tx.bonusUSDT : isWd ? numAmt * 0.01 : 0;
-                    const debitUsdt = tx.balanceDebitUSDT !== undefined ? tx.balanceDebitUSDT : isWd ? numAmt * 0.99 : numAmt;
-                    const creditUsdt = tx.totalCreditUSDT !== undefined ? tx.totalCreditUSDT : (tx.creditedAmountUSDT !== undefined ? tx.creditedAmountUSDT : numAmt);
+                    const bonusUsdt = tx.bonusUSDT !== undefined
+                      ? tx.bonusUSDT
+                      : (tx.bonusAmountUSDT !== undefined
+                        ? tx.bonusAmountUSDT
+                        : (isWd ? Math.round(numAmt * 0.01 * 1000000) / 1000000 : Math.round(numAmt * 0.03 * 1000000) / 1000000));
+                    const debitUsdt = tx.balanceDebitUSDT !== undefined
+                      ? tx.balanceDebitUSDT
+                      : (isWd ? Math.round(numAmt * 0.99 * 1000000) / 1000000 : numAmt);
+                    const creditUsdt = tx.totalCreditUSDT !== undefined
+                      ? tx.totalCreditUSDT
+                      : (tx.creditedAmountUSDT !== undefined
+                        ? tx.creditedAmountUSDT
+                        : (isWd ? 0 : Math.round(numAmt * 1.03 * 1000000) / 1000000));
                     const inrVal = tx.inrEquivalent !== undefined ? tx.inrEquivalent : Math.round(numAmt * (tx.fixedRate || 105) * 100) / 100;
 
                     return (
@@ -1113,8 +1159,8 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                               +1% Bonus (+{bonusUsdt.toFixed(2)} USDT)
                             </span>
                           ) : (
-                            <span className="text-gray-400">
-                              0% (Exact Credit)
+                            <span className="text-emerald-400 font-bold">
+                              +3% Bonus (+{bonusUsdt.toFixed(2)} USDT)
                             </span>
                           )}
                         </td>
@@ -1122,7 +1168,9 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                           {isWd ? (
                             <span className="text-amber-300 font-bold">-{debitUsdt.toFixed(2)} USDT (99% Debit)</span>
                           ) : (
-                            <span className="text-emerald-400 font-bold">+{creditUsdt.toFixed(2)} USDT (Credit)</span>
+                            <span className="text-emerald-400 font-bold">
+                              {tx.status === 'COMPLETED' ? `+${creditUsdt.toFixed(2)} USDT (Credited)` : `+${creditUsdt.toFixed(2)} USDT (Pending)`}
+                            </span>
                           )}
                         </td>
                         <td className="p-4 font-mono font-bold text-emerald-400">
@@ -1161,126 +1209,220 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
           onClose={() => setDetailModalOpen(false)}
           title={`Crypto Transfer Details (${selectedTx.requestId})`}
         >
-          <div className="space-y-4 text-xs font-mono">
-            <div className="grid grid-cols-2 gap-3 p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
-              <div>
-                <span className="text-gray-400 block text-[11px]">Type</span>
-                <span className={`font-bold ${selectedTx.transactionType === 'DEPOSIT' ? 'text-emerald-400' : 'text-purple-400'}`}>
-                  {selectedTx.transactionType}
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-400 block text-[11px]">Status</span>
-                <StatusBadge status={selectedTx.status} />
-              </div>
-              <div>
-                <span className="text-gray-400 block text-[11px]">
-                  {selectedTx.transactionType === 'DEPOSIT' ? 'Deposit USDT' : 'Requested USDT'}
-                </span>
-                <span className="text-white font-bold">
-                  {(selectedTx.depositAmountUSDT || selectedTx.requestedUSDT || selectedTx.usdtAmount || 0).toFixed(2)} USDT
-                </span>
-              </div>
-              {selectedTx.transactionType === 'WITHDRAWAL' ? (
-                <div>
-                  <span className="text-gray-400 block text-[11px]">Actual Balance Debit</span>
-                  <span className="text-amber-300 font-bold">
-                    {(selectedTx.balanceDebitUSDT || selectedTx.usdtAmount * 0.99).toFixed(2)} USDT (99%)
-                  </span>
+          {(() => {
+            const isDep = selectedTx.transactionType === 'DEPOSIT';
+            const numAmt = selectedTx.depositAmountUSDT || selectedTx.requestedUSDT || selectedTx.usdtAmount || 0;
+            const bonusAmt = selectedTx.bonusUSDT !== undefined
+              ? selectedTx.bonusUSDT
+              : (selectedTx.bonusAmountUSDT !== undefined
+                ? selectedTx.bonusAmountUSDT
+                : (isDep ? Math.round(numAmt * 0.03 * 1000000) / 1000000 : Math.round(numAmt * 0.01 * 1000000) / 1000000));
+            const credAmt = selectedTx.totalCreditUSDT !== undefined && selectedTx.totalCreditUSDT > 0
+              ? selectedTx.totalCreditUSDT
+              : Math.round(numAmt * 1.03 * 1000000) / 1000000;
+            const inrVal = selectedTx.inrEquivalent !== undefined
+              ? selectedTx.inrEquivalent
+              : Math.round(numAmt * (selectedTx.fixedRate || 105) * 100) / 100;
+
+            return (
+              <div className="space-y-4 text-xs font-mono">
+                {/* Specific Status Banners for Deposit Requests */}
+                {isDep && selectedTx.status === 'PENDING_VERIFICATION' && (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-1 text-amber-300">
+                    <div className="flex items-center gap-2 font-bold text-xs">
+                      <Clock className="w-4 h-4 text-amber-400" />
+                      <span>Pending Verification</span>
+                    </div>
+                    <p className="text-[11px] text-gray-300">
+                      Your Crypto Deposit Request has been submitted successfully and is waiting for Admin verification.
+                    </p>
+                    <p className="text-[10px] text-gray-400">
+                      No balance has been credited yet. Upon verification, your deposit and +3% bonus will be credited to your USDT wallet.
+                    </p>
+                  </div>
+                )}
+
+                {isDep && selectedTx.status === 'COMPLETED' && (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl space-y-2 text-emerald-300">
+                    <div className="flex items-center gap-2 font-bold text-xs">
+                      <Check className="w-4 h-4 text-emerald-400" />
+                      <span>Deposit Request Approved</span>
+                    </div>
+                    <p className="text-[11px] text-gray-300">
+                      Your Crypto Deposit Request has been approved. Your deposit amount and 3% bonus have been successfully credited to your USDT wallet.
+                    </p>
+                    <div className="space-y-1 text-[11px] text-gray-300 bg-[#0B0F19] p-2.5 rounded-lg border border-[#1F293D]">
+                      <div className="flex justify-between">
+                        <span>Deposit Amount:</span>
+                        <span className="text-white font-bold font-mono">{numAmt.toFixed(2)} USDT</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Bonus (3%):</span>
+                        <span className="text-emerald-400 font-bold font-mono">+{bonusAmt.toFixed(2)} USDT</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-emerald-300 border-t border-[#1F293D] pt-1">
+                        <span>Total Credited to Wallet:</span>
+                        <span className="font-mono">{credAmt.toFixed(2)} USDT</span>
+                      </div>
+                      {wallet && (
+                        <div className="flex justify-between text-blue-300 border-t border-[#1F293D] pt-1">
+                          <span>Updated Wallet Balance:</span>
+                          <span className="font-bold font-mono">{wallet.availableBalance} USDT</span>
+                        </div>
+                      )}
+                      {(selectedTx.approvedAt || selectedTx.verifiedAt) && (
+                        <div className="flex justify-between text-gray-400">
+                          <span>Approval Date:</span>
+                          <span>{new Date(selectedTx.approvedAt || selectedTx.verifiedAt).toLocaleString()}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {isDep && selectedTx.status === 'REJECTED' && (
+                  <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl space-y-1 text-rose-300">
+                    <div className="flex items-center gap-2 font-bold text-xs">
+                      <X className="w-4 h-4 text-rose-400" />
+                      <span>Deposit Request Rejected</span>
+                    </div>
+                    <p className="text-[11px] text-gray-300">
+                      Your Crypto Deposit Request has been rejected by Admin.
+                    </p>
+                    <div className="mt-1 p-2 bg-[#0B0F19] rounded-lg border border-[#1F293D] text-[11px] text-rose-300">
+                      <strong>Rejection Reason:</strong> {selectedTx.rejectionReason || 'No reason provided.'}
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-1">Zero balance has been credited to your USDT wallet.</p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3 p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Type</span>
+                    <span className={`font-bold ${isDep ? 'text-emerald-400' : 'text-purple-400'}`}>
+                      {selectedTx.transactionType}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Status</span>
+                    <StatusBadge status={selectedTx.status} />
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">
+                      {isDep ? 'Deposit USDT' : 'Requested USDT'}
+                    </span>
+                    <span className="text-white font-bold">
+                      {numAmt.toFixed(2)} USDT
+                    </span>
+                  </div>
+                  {!isDep ? (
+                    <div>
+                      <span className="text-gray-400 block text-[11px]">Actual Balance Debit</span>
+                      <span className="text-amber-300 font-bold">
+                        {(selectedTx.balanceDebitUSDT || selectedTx.usdtAmount * 0.99).toFixed(2)} USDT (99%)
+                      </span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span className="text-gray-400 block text-[11px]">3% Deposit Bonus</span>
+                      <span className="text-emerald-400 font-bold">
+                        +{bonusAmt.toFixed(2)} USDT (+3%)
+                      </span>
+                    </div>
+                  )}
+                  {!isDep ? (
+                    <div>
+                      <span className="text-gray-400 block text-[11px]">1% Platform Bonus</span>
+                      <span className="text-purple-400 font-bold">
+                        +{(selectedTx.bonusUSDT || selectedTx.usdtAmount * 0.01).toFixed(2)} USDT Benefit
+                      </span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span className="text-gray-400 block text-[11px]">Total USDT Credited</span>
+                      <span className="text-emerald-400 font-bold font-mono">
+                        {credAmt.toFixed(2)} USDT
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">Fixed Platform Rate</span>
+                    <span className="text-blue-400 font-bold">
+                      ₹{selectedTx.fixedRate || 105} / USDT
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[11px]">
+                      {isDep ? 'INR Equivalent (at ₹105)' : 'Full INR Payout'}
+                    </span>
+                    <span className="text-emerald-400 font-bold">
+                      {isDep
+                        ? `₹${inrVal.toLocaleString('en-IN')}`
+                        : `₹${selectedTx.finalAmount?.toLocaleString('en-IN')}`}
+                    </span>
+                  </div>
                 </div>
-              ) : (
-                <div>
-                  <span className="text-gray-400 block text-[11px]">Deposit Crediting</span>
-                  <span className="text-emerald-400 font-bold">
-                    Exact 1:1 Credit (0% Bonus)
-                  </span>
-                </div>
-              )}
-              {selectedTx.transactionType === 'WITHDRAWAL' ? (
-                <div>
-                  <span className="text-gray-400 block text-[11px]">1% Platform Bonus</span>
-                  <span className="text-purple-400 font-bold">
-                    +{(selectedTx.bonusUSDT || selectedTx.usdtAmount * 0.01).toFixed(2)} USDT Benefit
-                  </span>
-                </div>
-              ) : (
-                <div>
-                  <span className="text-gray-400 block text-[11px]">Fixed Platform Rate</span>
-                  <span className="text-blue-400 font-bold">
-                    ₹{selectedTx.fixedRate || 105} / USDT
-                  </span>
-                </div>
-              )}
-              <div>
-                <span className="text-gray-400 block text-[11px]">
-                  {selectedTx.transactionType === 'DEPOSIT' ? 'INR Equivalent (at ₹105)' : 'Full INR Payout'}
-                </span>
-                <span className="text-emerald-400 font-bold">
-                  {selectedTx.transactionType === 'DEPOSIT'
-                    ? `₹${((selectedTx.inrEquivalent !== undefined ? selectedTx.inrEquivalent : (selectedTx.depositAmountUSDT || selectedTx.usdtAmount || 0) * 105)).toLocaleString('en-IN')}`
-                    : `₹${selectedTx.finalAmount?.toLocaleString('en-IN')}`}
-                </span>
-              </div>
-            </div>
 
-            {selectedTx.network && (
-              <div className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D] flex justify-between">
-                <span className="text-gray-400 text-[11px]">Blockchain Network</span>
-                <span className="text-white font-bold">{selectedTx.network}</span>
-              </div>
-            )}
+                {selectedTx.network && (
+                  <div className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D] flex justify-between">
+                    <span className="text-gray-400 text-[11px]">Blockchain Network</span>
+                    <span className="text-white font-bold">{selectedTx.network}</span>
+                  </div>
+                )}
 
-            {(selectedTx.txHash || selectedTx.utr) && (
-              <div className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
-                <span className="text-gray-400 block text-[11px]">
-                  {selectedTx.transactionType === 'DEPOSIT' ? 'Transaction Hash (TXID)' : 'Submitted UTR / Reference'}
-                </span>
-                <span className="text-white font-bold break-all">{selectedTx.txHash || selectedTx.utr}</span>
-              </div>
-            )}
+                {(selectedTx.txHash || selectedTx.utr) && (
+                  <div className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D]">
+                    <span className="text-gray-400 block text-[11px]">
+                      {isDep ? 'Transaction Hash (TXID)' : 'Submitted UTR / Reference'}
+                    </span>
+                    <span className="text-white font-bold break-all">{selectedTx.txHash || selectedTx.utr}</span>
+                  </div>
+                )}
 
-            {selectedTx.paymentProofUrl && (
-              <div>
-                <span className="text-gray-400 block text-[11px] mb-1">Your Payment Proof</span>
-                <div className="max-h-48 rounded-xl overflow-hidden border border-[#1F293D]">
-                  <img src={selectedTx.paymentProofUrl} alt="Payment Proof" className="w-full object-contain max-h-48" />
-                </div>
-              </div>
-            )}
+                {selectedTx.paymentProofUrl && (
+                  <div>
+                    <span className="text-gray-400 block text-[11px] mb-1">Your Payment Proof</span>
+                    <div className="max-h-48 rounded-xl overflow-hidden border border-[#1F293D]">
+                      <img src={selectedTx.paymentProofUrl} alt="Payment Proof" className="w-full object-contain max-h-48" />
+                    </div>
+                  </div>
+                )}
 
-            {selectedTx.traderQrImageUrl && (
-              <div>
-                <span className="text-gray-400 block text-[11px] mb-1">Your Submitted Payout QR</span>
-                <div className="w-36 h-36 bg-white p-2 rounded-xl mx-auto border border-[#1F293D]">
-                  <img src={selectedTx.traderQrImageUrl} alt="Trader QR" className="w-full h-full object-contain" />
+                {selectedTx.traderQrImageUrl && (
+                  <div>
+                    <span className="text-gray-400 block text-[11px] mb-1">Your Submitted Payout QR</span>
+                    <div className="w-36 h-36 bg-white p-2 rounded-xl mx-auto border border-[#1F293D]">
+                      <img src={selectedTx.traderQrImageUrl} alt="Trader QR" className="w-full h-full object-contain" />
+                    </div>
+                  </div>
+                )}
+
+                {selectedTx.payoutReference && (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300">
+                    <span className="block text-[11px] font-bold">Payout Reference / UTR</span>
+                    <span className="text-white font-bold">{selectedTx.payoutReference}</span>
+                  </div>
+                )}
+
+                {!isDep && selectedTx.rejectionReason && (
+                  <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-300">
+                    <span className="block text-[11px] font-bold">Rejection Reason</span>
+                    <span>{selectedTx.rejectionReason}</span>
+                  </div>
+                )}
+
+                <div className="pt-2 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setDetailModalOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-[#111827] border border-[#1F293D] text-gray-300 hover:text-white"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
-            )}
-
-            {selectedTx.payoutReference && (
-              <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300">
-                <span className="block text-[11px] font-bold">Payout Reference / UTR</span>
-                <span className="text-white font-bold">{selectedTx.payoutReference}</span>
-              </div>
-            )}
-
-            {selectedTx.rejectionReason && (
-              <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-300">
-                <span className="block text-[11px] font-bold">Rejection Reason</span>
-                <span>{selectedTx.rejectionReason}</span>
-              </div>
-            )}
-
-            <div className="pt-2 text-right">
-              <button
-                type="button"
-                onClick={() => setDetailModalOpen(false)}
-                className="px-4 py-2 rounded-xl bg-[#111827] border border-[#1F293D] text-gray-300 hover:text-white"
-              >
-                Close
-              </button>
-            </div>
-          </div>
+            );
+          })()}
         </Modal>
       )}
     </div>

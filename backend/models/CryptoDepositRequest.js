@@ -19,6 +19,12 @@ const cryptoDepositRequestSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    systemType: {
+      type: String,
+      enum: ['NORMAL', 'CRYPTO'],
+      default: 'CRYPTO',
+      index: true,
+    },
     // Dynamic user-entered USDT deposit amount (supports fractions e.g. 125.50)
     depositAmountUSDT: {
       type: Number,
@@ -30,10 +36,10 @@ const cryptoDepositRequestSchema = new mongoose.Schema(
       required: [true, 'USDT Amount is required'],
       min: [0.000001, 'Amount must be greater than 0'],
     },
-    // Exact USDT Deposit (0% Bonus, 1:1 Crediting)
+    // Crypto Deposit Bonus (3% platform bonus)
     bonusPercent: {
       type: Number,
-      default: 0.0,
+      default: 3.0,
       required: false,
     },
     bonusAmountUSDT: {
@@ -148,6 +154,24 @@ const cryptoDepositRequestSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    approvedAt: {
+      type: Date,
+      default: null,
+    },
+    rejectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    rejectedAt: {
+      type: Date,
+      default: null,
+    },
     rejectionReason: {
       type: String,
       default: '',
@@ -163,6 +187,7 @@ const cryptoDepositRequestSchema = new mongoose.Schema(
 );
 
 cryptoDepositRequestSchema.index({ traderId: 1, createdAt: -1 });
+cryptoDepositRequestSchema.index({ systemType: 1, createdAt: -1 });
 
 const CryptoDepositRequest = mongoose.model('CryptoDepositRequest', cryptoDepositRequestSchema);
 

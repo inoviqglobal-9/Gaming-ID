@@ -11,6 +11,7 @@ const {
   createWithdrawalRequest,
   getTraderWithdrawals,
   getTraderCryptoTransactions,
+  getTraderCryptoWallet,
   getAdminCryptoOverview,
   getAdminDeposits,
   approveDeposit,
@@ -69,6 +70,7 @@ router.post(
 router.get('/withdrawals', requireAuth, requireClient, getTraderWithdrawals);
 router.get('/withdrawals/my', requireAuth, requireClient, getTraderWithdrawals);
 router.get('/transactions', requireAuth, requireClient, getTraderCryptoTransactions);
+router.get('/wallet', requireAuth, requireClient, getTraderCryptoWallet);
 
 // Trader Legacy routes
 router.post('/request', requireAuth, requireClient, requirePasswordChanged, createCryptoRequest);
