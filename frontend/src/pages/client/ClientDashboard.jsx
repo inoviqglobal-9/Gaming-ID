@@ -87,6 +87,12 @@ export const ClientDashboard = ({ navigate }) => {
           fetchDashboardData(period, true);
           refreshUser();
         });
+        socket.on('wallet_rate_updated', () => {
+          fetchDashboardData(period, true);
+        });
+        socket.on('usdt_rate_updated', () => {
+          fetchDashboardData(period, true);
+        });
       } catch (err) {
         console.warn('[Trader Socket.IO Error]:', err);
       }
@@ -226,13 +232,23 @@ export const ClientDashboard = ({ navigate }) => {
               </p>
               <div className="mt-2.5 pt-2 border-t border-[#1F293D]/70 space-y-1 text-[11px] font-mono">
                 <div className="text-gray-400 flex items-center justify-between">
-                  <span>Fixed USDT Rate:</span>
-                  <span className="text-blue-400 font-semibold">₹105 / USDT</span>
+                  <span>USDT Rate:</span>
+                  <span className="text-blue-400 font-semibold">
+                    ₹{usdtWallet?.valuationRate !== undefined
+                      ? (Number(usdtWallet.valuationRate) % 1 === 0
+                          ? Number(usdtWallet.valuationRate)
+                          : Number(usdtWallet.valuationRate).toFixed(2))
+                      : 105} / USDT
+                  </span>
                 </div>
                 <div className="text-gray-300 flex items-center justify-between">
                   <span>INR Equivalent:</span>
                   <span className="text-emerald-400 font-bold">
-                    ₹{Number(usdtWallet?.inrEquivalent || ((Number(usdtWallet?.availableBalance || balances?.USDT || 0)) * 105)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ₹{Number(
+                      usdtWallet?.inrEquivalent !== undefined
+                        ? usdtWallet.inrEquivalent
+                        : ((Number(usdtWallet?.availableBalance || balances?.USDT || 0)) * (Number(usdtWallet?.valuationRate) || 105))
+                    ).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                 </div>
               </div>

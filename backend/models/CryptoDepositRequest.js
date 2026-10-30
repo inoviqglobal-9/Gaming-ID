@@ -63,6 +63,11 @@ const cryptoDepositRequestSchema = new mongoose.Schema(
       default: 0.0,
       required: false,
     },
+    settingsVersion: {
+      type: Number,
+      default: 1,
+      required: false,
+    },
     // Blockchain details
     network: {
       type: String,

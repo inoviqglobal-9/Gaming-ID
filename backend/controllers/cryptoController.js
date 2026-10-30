@@ -9,7 +9,9 @@ const UsdtWallet = require('../models/UsdtWallet');
 const BalanceLedger = require('../models/BalanceLedger');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
-const { emitDepositStatusUpdate } = require('../socket');
+const AuditLog = require('../models/AuditLog');
+const CryptoCommercialSettings = require('../models/CryptoCommercialSettings');
+const { emitDepositStatusUpdate, emitCryptoSettingsUpdate } = require('../socket');
 
 // Helper to format float to 2 and 6 decimal places
 const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
@@ -149,40 +151,45 @@ const streamActiveQR = async (req, res) => {
 // ==========================================
 
 const getCryptoRates = async (req, res) => {
-  const baseRate = Number(config.usdtInrRate || 105.0);
-  const depositBonusPercent = 3.0; // Preserved 3% Deposit Bonus
-  const withdrawalBonusPercent = Number(config.cryptoWithdrawalBonusPercent || 1.0);
+  const settings = await CryptoCommercialSettings.getSettings();
+  const baseRate = Number(settings.usdtRateINR || 105.0);
+  const depositBonusPercent = Number(settings.depositBonusPercent !== undefined ? settings.depositBonusPercent : 3.0);
+  const withdrawalBonusPercent = Number(settings.withdrawalBonusPercent !== undefined ? settings.withdrawalBonusPercent : 1.0);
   const withdrawalFeePercent = 0.0; // Withdrawal fee is 0%
   const depositFeePercent = 0.0; // Deposit fee is 0%
 
   const effectiveDepositRate = baseRate;
-  const effectiveWithdrawalRate = baseRate; // 100% full payout at base settlement rate ₹105
+  const effectiveWithdrawalRate = baseRate;
 
   return res.status(200).json({
     success: true,
     currency: 'USDT',
     baseRate,
-    depositBonusPercent: 3,
+    depositBonusPercent,
     depositFeePercent: 0,
     withdrawalFeePercent: 0,
     withdrawalBonusPercent,
     effectiveDepositRate,
     effectiveWithdrawalRate,
     fixedWithdrawalAmounts: FIXED_WITHDRAWAL_AMOUNTS,
+    version: settings.version || 1,
     formula: {
-      deposit: 'Dynamic USDT Deposit with 3% Bonus. 1 USDT = ₹105. Total Credit = Deposit Amount * 1.03',
-      withdrawal: 'Trader Balance Debit = 99% of Requested USDT (+1% Bonus Benefit). Full Payout = 100% Requested USDT Equivalent (₹105/USDT)',
+      deposit: `Dynamic USDT Deposit with ${depositBonusPercent}% Bonus. 1 USDT = ₹${baseRate}. Total Credit = Deposit Amount * (1 + ${depositBonusPercent}/100)`,
+      withdrawal: `Trader Balance Debit = ${round2(100 - withdrawalBonusPercent)}% of Requested USDT (+${withdrawalBonusPercent}% Bonus Benefit). Full Payout = 100% Requested USDT Equivalent (₹${baseRate}/USDT)`,
     },
   });
 };
 
 const getWithdrawalConfig = async (req, res) => {
-  const baseRate = Number(config.usdtInrRate || 105.0);
+  const settings = await CryptoCommercialSettings.getSettings();
+  const baseRate = Number(settings.usdtRateINR || 105.0);
+  const withdrawalBonusPercent = Number(settings.withdrawalBonusPercent !== undefined ? settings.withdrawalBonusPercent : 1.0);
+
   return res.status(200).json({
     success: true,
     currency: 'USDT',
     baseRate,
-    withdrawalBonusPercent: WITHDRAWAL_BONUS_PERCENT,
+    withdrawalBonusPercent,
     withdrawalFeePercent: 0,
     fixedWithdrawalAmounts: FIXED_WITHDRAWAL_AMOUNTS,
     fixedAmounts: FIXED_WITHDRAWAL_AMOUNTS,
@@ -190,6 +197,7 @@ const getWithdrawalConfig = async (req, res) => {
     settlementRateINR: baseRate,
     minWithdrawal: 100,
     maxWithdrawal: 10000,
+    version: settings.version || 1,
   });
 };
 
@@ -205,11 +213,12 @@ const getQuotation = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Please provide a valid positive amount.' });
   }
 
-  const baseRate = Number(config.usdtInrRate || 105.0);
+  const settings = await CryptoCommercialSettings.getSettings();
+  const baseRate = Number(settings.usdtRateINR || 105.0);
 
   if (type.toUpperCase() === 'DEPOSIT') {
     const depositAmountUSDT = numAmount;
-    const bonusPercent = 3.0;
+    const bonusPercent = Number(settings.depositBonusPercent !== undefined ? settings.depositBonusPercent : 3.0);
     const bonusAmountUSDT = round6(depositAmountUSDT * (bonusPercent / 100));
     const totalCreditUSDT = round6(depositAmountUSDT + bonusAmountUSDT);
     const inrEquivalent = round2(depositAmountUSDT * baseRate);
@@ -223,21 +232,23 @@ const getQuotation = async (req, res) => {
       totalCreditUSDT,
       amountToSend: depositAmountUSDT,
       fixedRate: baseRate,
+      baseRate,
       inrEquivalent,
-      bonusPercent: 3,
+      bonusPercent,
       bonusAmountUSDT,
       feePercent: 0,
       feeAmount: 0,
+      version: settings.version || 1,
     });
   } else {
-    // 1% Bonus System: Trader receives 100% payout, balance debit is 99%
+    // Dynamic Bonus System: Trader receives 100% payout, balance debit is (100 - withdrawalBonusPercent)%
     const baseInrAmount = round2(numAmount * baseRate);
-    const bonusPercent = Number(config.cryptoWithdrawalBonusPercent || 1.0);
+    const bonusPercent = Number(settings.withdrawalBonusPercent !== undefined ? settings.withdrawalBonusPercent : 1.0);
     const bonusUSDT = round6(numAmount * (bonusPercent / 100));
     const balanceDebitUSDT = round6(numAmount - bonusUSDT);
     const payoutUSDTEquivalent = numAmount;
     const finalInrPayout = baseInrAmount; // 100% full payout obligation
-    const effectiveRate = baseRate; // 105.00
+    const effectiveRate = baseRate;
 
     return res.status(200).json({
       success: true,
@@ -257,6 +268,7 @@ const getQuotation = async (req, res) => {
       deductionPercent: 0,
       deductionAmount: 0,
       usdtDeduction: balanceDebitUSDT,
+      version: settings.version || 1,
     });
   }
 };
@@ -335,10 +347,11 @@ const createDepositRequest = async (req, res) => {
 
     const proofUrl = req.file ? `/uploads/${req.file.filename}` : (req.body.paymentProofUrl || '');
 
-    // Dynamic Deposit with 3% Bonus & Fixed ₹105 Rate INR Equivalent
-    const baseRate = Number(config.usdtInrRate || 105.0);
+    // Dynamic Deposit with Admin-configured Rate & Bonus Snapshot
+    const settings = await CryptoCommercialSettings.getSettings();
+    const baseRate = Number(settings.usdtRateINR || 105.0);
     const inrEquivalent = round2(numAmount * baseRate);
-    const bonusPercent = 3.0;
+    const bonusPercent = Number(settings.depositBonusPercent !== undefined ? settings.depositBonusPercent : 3.0);
     const bonusAmountUSDT = round6(numAmount * (bonusPercent / 100));
     const totalCreditUSDT = round6(numAmount + bonusAmountUSDT);
 
@@ -364,7 +377,9 @@ const createDepositRequest = async (req, res) => {
       bonusAmountUSDT,
       totalCreditUSDT,
       baseRate,
+      fixedRate: baseRate,
       inrEquivalent,
+      settingsVersion: settings.version || 1,
       network,
       destinationWalletAddress,
       txHash,
@@ -382,12 +397,12 @@ const createDepositRequest = async (req, res) => {
         recipientUserId: adm._id,
         recipientClientId: adm.username,
         type: 'CRYPTO_DEPOSIT_SUBMITTED',
-        title: 'New Crypto Deposit Request (+3% Bonus)',
-        message: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (3% Bonus: ${bonusAmountUSDT} USDT, Total Credit: ${totalCreditUSDT} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}`,
+        title: `New Crypto Deposit Request (+${bonusPercent}% Bonus)`,
+        message: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (${bonusPercent}% Bonus: ${bonusAmountUSDT} USDT, Total Credit: ${totalCreditUSDT} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}`,
         referenceId: requestId,
         amount: totalCreditUSDT,
         currency: 'USDT',
-        metadata: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash, network, requestId },
+        metadata: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash, network, requestId, bonusPercent, baseRate },
       });
     }
 
@@ -396,12 +411,12 @@ const createDepositRequest = async (req, res) => {
       recipientUserId: req.user._id,
       recipientClientId: req.user.username,
       type: 'CRYPTO_DEPOSIT_SUBMITTED',
-      title: 'Crypto Deposit Request Submitted (+3% Bonus)',
-      message: `Your deposit request for ${numAmount} USDT (+3% Bonus: ${bonusAmountUSDT} USDT, Total Credit: ${totalCreditUSDT} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}) has been submitted for Admin verification.`,
+      title: `Crypto Deposit Request Submitted (+${bonusPercent}% Bonus)`,
+      message: `Your deposit request for ${numAmount} USDT (+${bonusPercent}% Bonus: ${bonusAmountUSDT} USDT, Total Credit: ${totalCreditUSDT} USDT, INR Equivalent: ₹${inrEquivalent.toLocaleString('en-IN')}) has been submitted for Admin verification.`,
       referenceId: requestId,
       amount: totalCreditUSDT,
       currency: 'USDT',
-      metadata: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash, network, requestId },
+      metadata: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, txHash, network, requestId, bonusPercent, baseRate },
     });
 
     // Log activity
@@ -412,14 +427,14 @@ const createDepositRequest = async (req, res) => {
       actorRole: 'TRADER',
       actionType: 'DEPOSIT_REQUEST_SUBMITTED',
       requestId,
-      details: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, network, txHash },
-      description: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (+3% Bonus: ${bonusAmountUSDT} USDT, Total: ${totalCreditUSDT} USDT, INR Eq: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}.`,
+      details: { depositAmountUSDT: numAmount, bonusAmountUSDT, totalCreditUSDT, inrEquivalent, network, txHash, bonusPercent, baseRate },
+      description: `Trader ${req.user.username} submitted ${numAmount} USDT deposit (+${bonusPercent}% Bonus: ${bonusAmountUSDT} USDT, Total: ${totalCreditUSDT} USDT, INR Eq: ₹${inrEquivalent.toLocaleString('en-IN')}). TXID: ${txHash}.`,
       ipAddress: req.ip,
     });
 
     return res.status(201).json({
       success: true,
-      message: `Deposit request submitted successfully. You will receive ${totalCreditUSDT} USDT (${numAmount} USDT + 3% bonus) upon Admin verification.`,
+      message: `Deposit request submitted successfully. You will receive ${totalCreditUSDT} USDT (${numAmount} USDT + ${bonusPercent}% bonus) upon Admin verification.`,
       data: depositReq,
     });
   } catch (error) {
@@ -469,18 +484,19 @@ const createWithdrawalRequest = async (req, res) => {
       });
     }
 
-    // 1% Bonus Calculations
+    // Admin-configured Dynamic Bonus Calculations
     const requestedUSDT = numAmount;
-    const bonusPercent = WITHDRAWAL_BONUS_PERCENT; // 1.0%
-    const bonusUSDT = round6(requestedUSDT * (bonusPercent / 100)); // 1% platform bonus benefit
-    const balanceDebitUSDT = round6(requestedUSDT - bonusUSDT); // 99% actual balance debit
+    const settings = await CryptoCommercialSettings.getSettings();
+    const baseRate = Number(settings.usdtRateINR || 105.0);
+    const bonusPercent = Number(settings.withdrawalBonusPercent !== undefined ? settings.withdrawalBonusPercent : 1.0);
+    const bonusUSDT = round6(requestedUSDT * (bonusPercent / 100)); // platform bonus benefit
+    const balanceDebitUSDT = round6(requestedUSDT - bonusUSDT); // (100 - bonus)% actual balance debit
     const payoutUSDTEquivalent = requestedUSDT; // Full 100% payout obligation
 
-    const baseRate = Number(config.usdtInrRate || 105.0);
     const baseInrAmount = round2(requestedUSDT * baseRate);
-    const finalInrPayout = baseInrAmount; // Trader receives full 100% payout equivalent (₹105/USDT)
+    const finalInrPayout = baseInrAmount; // Trader receives full 100% payout equivalent (at snapshot baseRate)
 
-    // Atomically reserve only 99% of requested USDT (balanceDebitUSDT)
+    // Atomically reserve only balanceDebitUSDT from balance
     try {
       await UsdtWallet.reserveBalance({
         traderId: req.user._id,
@@ -489,7 +505,7 @@ const createWithdrawalRequest = async (req, res) => {
     } catch (err) {
       return res.status(400).json({
         success: false,
-        message: err.message || `Insufficient available balance. You need ${balanceDebitUSDT} USDT available (99% balance debit for a ${requestedUSDT} USDT request with +1% bonus).`,
+        message: err.message || `Insufficient available balance. You need ${balanceDebitUSDT} USDT available (${round2(100 - bonusPercent)}% balance debit for a ${requestedUSDT} USDT request with +${bonusPercent}% bonus).`,
       });
     }
 
@@ -508,6 +524,7 @@ const createWithdrawalRequest = async (req, res) => {
       bonusUSDT,
       balanceDebitUSDT,
       payoutUSDTEquivalent,
+      settingsVersion: settings.version || 1,
       settlementMethod: 'UPI_INR',
       settlementRateINR: baseRate,
       payoutINR: finalInrPayout,
@@ -529,12 +546,12 @@ const createWithdrawalRequest = async (req, res) => {
         recipientUserId: adm._id,
         recipientClientId: adm.username,
         type: 'CRYPTO_WITHDRAWAL_SUBMITTED',
-        title: 'New Crypto Withdrawal Request (+1% Bonus)',
-        message: `Trader ${req.user.username} requested ${requestedUSDT} USDT payout (₹${finalInrPayout.toLocaleString('en-IN')}) with 1% bonus (${bonusUSDT} USDT bonus, ${balanceDebitUSDT} USDT balance debit).`,
+        title: `New Crypto Withdrawal Request (+${bonusPercent}% Bonus)`,
+        message: `Trader ${req.user.username} requested ${requestedUSDT} USDT payout (₹${finalInrPayout.toLocaleString('en-IN')}) with ${bonusPercent}% bonus (${bonusUSDT} USDT bonus, ${balanceDebitUSDT} USDT balance debit).`,
         referenceId: requestId,
         amount: finalInrPayout,
         currency: 'INR',
-        metadata: { requestedUSDT, bonusUSDT, balanceDebitUSDT, requestId },
+        metadata: { requestedUSDT, bonusUSDT, balanceDebitUSDT, requestId, bonusPercent, baseRate },
       });
     }
 
@@ -543,12 +560,12 @@ const createWithdrawalRequest = async (req, res) => {
       recipientUserId: req.user._id,
       recipientClientId: req.user.username,
       type: 'CRYPTO_WITHDRAWAL_SUBMITTED',
-      title: 'Crypto Withdrawal Submitted (+1% Bonus)',
-      message: `${balanceDebitUSDT} USDT reserved from balance (1% Bonus Benefit: +${bonusUSDT} USDT). Your full payout of ₹${finalInrPayout.toLocaleString('en-IN')} (${requestedUSDT} USDT equivalent) is under administrative review.`,
+      title: `Crypto Withdrawal Submitted (+${bonusPercent}% Bonus)`,
+      message: `${balanceDebitUSDT} USDT reserved from balance (${bonusPercent}% Bonus Benefit: +${bonusUSDT} USDT). Your full payout of ₹${finalInrPayout.toLocaleString('en-IN')} (${requestedUSDT} USDT equivalent) is under administrative review.`,
       referenceId: requestId,
       amount: finalInrPayout,
       currency: 'INR',
-      metadata: { requestedUSDT, bonusUSDT, balanceDebitUSDT, requestId },
+      metadata: { requestedUSDT, bonusUSDT, balanceDebitUSDT, requestId, bonusPercent, baseRate },
     });
 
     // Log Activity
@@ -566,16 +583,17 @@ const createWithdrawalRequest = async (req, res) => {
         balanceDebitUSDT,
         payoutUSDTEquivalent,
         finalInrPayout,
+        baseRate,
         traderUpiId: upi,
         hasQr: Boolean(qrUrl),
       },
-      description: `Trader ${req.user.username} requested ${requestedUSDT} USDT withdrawal (+1% bonus: +${bonusUSDT} USDT bonus benefit, ${balanceDebitUSDT} USDT balance debit, ₹${finalInrPayout} full payout).`,
+      description: `Trader ${req.user.username} requested ${requestedUSDT} USDT withdrawal (+${bonusPercent}% bonus: +${bonusUSDT} USDT bonus benefit, ${balanceDebitUSDT} USDT balance debit, ₹${finalInrPayout} full payout).`,
       ipAddress: req.ip,
     });
 
     return res.status(201).json({
       success: true,
-      message: `Withdrawal request submitted for ${requestedUSDT} USDT. ${balanceDebitUSDT} USDT reserved from balance (+1% Bonus Benefit: +${bonusUSDT} USDT). Full payout obligation: ₹${finalInrPayout.toLocaleString('en-IN')}.`,
+      message: `Withdrawal request submitted for ${requestedUSDT} USDT. ${balanceDebitUSDT} USDT reserved from balance (+${bonusPercent}% Bonus Benefit: +${bonusUSDT} USDT). Full payout obligation: ₹${finalInrPayout.toLocaleString('en-IN')}.`,
       data: withdrawalReq,
     });
   } catch (error) {
@@ -648,8 +666,10 @@ const getTraderCryptoTransactions = async (req, res) => {
 const getTraderCryptoWallet = async (req, res) => {
   try {
     const userId = req.user._id;
+    const settings = await CryptoCommercialSettings.getSettings();
+    const activeRate = Number(settings.usdtRateINR || 105.0);
     const wallet = await UsdtWallet.syncWithLedger(userId);
-    const valuation = await wallet.toSubledgerValuation('CRYPTO', config.usdtInrRate || 105.0);
+    const valuation = await wallet.toSubledgerValuation('CRYPTO', activeRate);
     return res.status(200).json(valuation);
   } catch (error) {
     console.error('[getTraderCryptoWallet Error]:', error.message);
@@ -1650,6 +1670,114 @@ const adminReviewCrypto = async (req, res) => {
   return res.status(200).json({ success: true, message: 'Legacy review handled.' });
 };
 
+// ==========================================
+// 8. ADMIN CRYPTO COMMERCIAL SETTINGS
+// ==========================================
+
+const getCryptoSettings = async (req, res) => {
+  try {
+    const settings = await CryptoCommercialSettings.getSettings();
+    return res.status(200).json({
+      success: true,
+      data: {
+        usdtRateINR: settings.usdtRateINR,
+        depositBonusPercent: settings.depositBonusPercent,
+        withdrawalBonusPercent: settings.withdrawalBonusPercent,
+        version: settings.version,
+        updatedAt: settings.updatedAt,
+        updatedByUsername: settings.updatedByUsername,
+        changeReason: settings.changeReason,
+      },
+    });
+  } catch (error) {
+    console.error('[getCryptoSettings Error]:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch crypto commercial settings.' });
+  }
+};
+
+const updateCryptoSettings = async (req, res) => {
+  try {
+    const {
+      usdtRateINR,
+      depositBonusPercent,
+      withdrawalBonusPercent,
+      newRate,
+      newDepositBonus,
+      newWithdrawalBonus,
+      changeReason,
+    } = req.body;
+
+    const rateToUpdate = usdtRateINR !== undefined ? usdtRateINR : newRate;
+    const depBonusToUpdate = depositBonusPercent !== undefined ? depositBonusPercent : newDepositBonus;
+    const wdBonusToUpdate = withdrawalBonusPercent !== undefined ? withdrawalBonusPercent : newWithdrawalBonus;
+
+    const updated = await CryptoCommercialSettings.updateSettings({
+      newRate: rateToUpdate,
+      newDepositBonus: depBonusToUpdate,
+      newWithdrawalBonus: wdBonusToUpdate,
+      changeReason,
+      user: req.user,
+    });
+
+    try {
+      await AuditLog.create({
+        action: 'UPDATE_CRYPTO_COMMERCIAL_SETTINGS',
+        userId: req.user?._id,
+        username: req.user?.username,
+        role: req.user?.role,
+        details: {
+          usdtRateINR: updated.usdtRateINR,
+          depositBonusPercent: updated.depositBonusPercent,
+          withdrawalBonusPercent: updated.withdrawalBonusPercent,
+          version: updated.version,
+          changeReason: updated.changeReason,
+        },
+        ipAddress: req.ip,
+      });
+    } catch (auditErr) {
+      console.warn('[AuditLog Warning]:', auditErr.message);
+    }
+
+    emitCryptoSettingsUpdate({
+      usdtRateINR: updated.usdtRateINR,
+      depositBonusPercent: updated.depositBonusPercent,
+      withdrawalBonusPercent: updated.withdrawalBonusPercent,
+      version: updated.version,
+      timestamp: Date.now(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Crypto commercial settings updated successfully to Rate: ₹${updated.usdtRateINR}, Deposit Bonus: +${updated.depositBonusPercent}%, Withdrawal Bonus: +${updated.withdrawalBonusPercent}%.`,
+      data: {
+        usdtRateINR: updated.usdtRateINR,
+        depositBonusPercent: updated.depositBonusPercent,
+        withdrawalBonusPercent: updated.withdrawalBonusPercent,
+        version: updated.version,
+        updatedAt: updated.updatedAt,
+        updatedByUsername: updated.updatedByUsername,
+        changeReason: updated.changeReason,
+      },
+    });
+  } catch (error) {
+    console.error('[updateCryptoSettings Error]:', error);
+    return res.status(400).json({ success: false, message: error.message || 'Failed to update crypto commercial settings.' });
+  }
+};
+
+const getCryptoSettingsHistory = async (req, res) => {
+  try {
+    const settings = await CryptoCommercialSettings.getSettings();
+    return res.status(200).json({
+      success: true,
+      data: settings.auditHistory || [],
+    });
+  } catch (error) {
+    console.error('[getCryptoSettingsHistory Error]:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch crypto settings history.' });
+  }
+};
+
 module.exports = {
   // Quotations & Rates
   getCryptoRates,
@@ -1659,6 +1787,11 @@ module.exports = {
   streamActiveQR,
   broadcastActiveQR,
   broadcastBalanceUpdate,
+
+  // Admin Commercial Settings
+  getCryptoSettings,
+  updateCryptoSettings,
+  getCryptoSettingsHistory,
 
   // Trader Deposit & Withdrawal
   createDepositRequest,

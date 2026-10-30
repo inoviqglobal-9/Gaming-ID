@@ -50,6 +50,11 @@ const cryptoWithdrawalRequestSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    settingsVersion: {
+      type: Number,
+      default: 1,
+      required: false,
+    },
     // 1% Bonus System fields
     bonusPercent: {
       type: Number,

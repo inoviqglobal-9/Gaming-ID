@@ -1117,7 +1117,7 @@ export const ManageClients = () => {
             <div className="bg-[#0E1524] border border-[#1F293D] rounded-xl p-4 shadow-sm border-l-2 border-l-blue-500">
               <div className="flex items-center justify-between text-gray-400 text-xs">
                 <span>INR Equivalent</span>
-                <span className="text-[10px] font-mono text-blue-400 font-bold">@ ₹105</span>
+                <span className="text-[10px] font-mono text-blue-400 font-bold">@ ₹{traderWalletData?.valuationRate || 105}</span>
               </div>
               <div className="mt-2 text-xl font-bold font-mono text-white">
                 {traderWalletLoading ? '...' : `₹${Number(traderWalletData?.inrEquivalent || ((Number(traderWalletData?.availableBalance || 0)) * 105)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}

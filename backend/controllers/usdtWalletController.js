@@ -7,6 +7,7 @@ const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const DepositRequest = require('../models/DepositRequest');
+const WalletRateConfig = require('../models/WalletRateConfig');
 const { config } = require('../config/env');
 
 const FIXED_RATE = 105.0;
@@ -25,11 +26,30 @@ const getTraderUsdtWallet = async (req, res) => {
   try {
     const userId = req.user._id;
     const requestedModule = req.query.module ? req.query.module.toUpperCase() : null; // 'NORMAL' or 'CRYPTO'
+
+    // Retrieve active dynamic valuation rate from WalletRateConfig
+    let activeRate = config.usdtInrRate || FIXED_RATE;
+    let rateDoc = null;
+    try {
+      rateDoc = await WalletRateConfig.getActiveRate();
+      if (rateDoc && rateDoc.rateINRPerUSDT) {
+        activeRate = rateDoc.rateINRPerUSDT;
+      }
+    } catch (rateErr) {
+      console.warn('[getTraderUsdtWallet] Could not load WalletRateConfig, using fallback:', rateErr.message);
+    }
+
     // Always sync with BalanceLedger to reflect any recently confirmed deposits
     const wallet = await UsdtWallet.syncWithLedger(userId);
     const valuation = requestedModule
-      ? await wallet.toSubledgerValuation(requestedModule, config.usdtInrRate || FIXED_RATE)
-      : wallet.toValuation(config.usdtInrRate || FIXED_RATE);
+      ? await wallet.toSubledgerValuation(requestedModule, activeRate)
+      : wallet.toValuation(activeRate);
+
+    // Attach explicit top-level valuation rate fields matching prompt specifications
+    valuation.valuationRate = Number(activeRate).toFixed(2);
+    valuation.rateType = 'ADMIN_CONFIGURED';
+    valuation.rateUpdatedAt = rateDoc ? rateDoc.updatedAt : null;
+    valuation.rateVersion = rateDoc ? rateDoc.version : 1;
 
     return res.status(200).json(valuation);
   } catch (error) {
@@ -126,8 +146,24 @@ const getAdminTraderUsdtWallet = async (req, res) => {
       });
     }
 
+    let activeRate = config.usdtInrRate || FIXED_RATE;
+    let rateDoc = null;
+    try {
+      rateDoc = await WalletRateConfig.getActiveRate();
+      if (rateDoc && rateDoc.rateINRPerUSDT) {
+        activeRate = rateDoc.rateINRPerUSDT;
+      }
+    } catch (rateErr) {
+      console.warn('[getAdminTraderUsdtWallet] Could not load WalletRateConfig:', rateErr.message);
+    }
+
     const wallet = await UsdtWallet.syncWithLedger(trader._id);
-    const valuation = wallet.toValuation(config.usdtInrRate || FIXED_RATE);
+    const valuation = wallet.toValuation(activeRate);
+
+    valuation.valuationRate = Number(activeRate).toFixed(2);
+    valuation.rateType = 'ADMIN_CONFIGURED';
+    valuation.rateUpdatedAt = rateDoc ? rateDoc.updatedAt : null;
+    valuation.rateVersion = rateDoc ? rateDoc.version : 1;
 
     return res.status(200).json({
       ...valuation,

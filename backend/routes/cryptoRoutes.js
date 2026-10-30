@@ -27,6 +27,9 @@ const {
   deleteAdminQR,
   getAdminCryptoTransactions,
   getAdminCryptoActivities,
+  getCryptoSettings,
+  updateCryptoSettings,
+  getCryptoSettingsHistory,
   // Legacy
   getCryptoConfig,
   createCryptoRequest,
@@ -44,6 +47,7 @@ const {
 
 // Public / Authenticated Rates and Active QR
 router.get('/rates', getCryptoRates);
+router.get('/settings', getCryptoSettings);
 router.get('/quote', getQuotation);
 router.get('/withdrawal-config', getWithdrawalConfig);
 router.get('/deposit-qr', getActiveDepositQR);
@@ -78,6 +82,9 @@ router.get('/my', requireAuth, requireClient, getMyCryptoRequests);
 
 // Admin Crypto Endpoints
 router.get('/admin/overview', requireAuth, requireAdmin, getAdminCryptoOverview);
+router.get('/admin/settings', requireAuth, requireAdmin, getCryptoSettings);
+router.patch('/admin/settings', requireAuth, requireAdmin, updateCryptoSettings);
+router.get('/admin/settings/history', requireAuth, requireAdmin, getCryptoSettingsHistory);
 
 // Admin Deposit Requests
 router.get('/admin/deposits', requireAuth, requireAdmin, getAdminDeposits);

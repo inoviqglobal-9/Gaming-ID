@@ -220,6 +220,20 @@ export const adminService = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // USDT Valuation Rate Management (Admin controlled)
+  getWalletRate: () => apiFetch('/admin/wallet-rate'),
+  updateWalletRate: (data) =>
+    apiFetch('/admin/wallet-rate', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  getCryptoSettings: () => apiFetch('/admin/crypto/settings'),
+  updateCryptoSettings: (data) =>
+    apiFetch('/admin/crypto/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  getCryptoSettingsHistory: () => apiFetch('/admin/crypto/settings/history'),
 };
 
 export const payinService = {
@@ -428,6 +442,15 @@ export const cryptoService = {
   getAdminTransactions: () => apiFetch('/crypto/admin/transactions'),
   getAdminActivities: () => apiFetch('/crypto/admin/activities'),
 
+  // Commercial Settings
+  getCryptoSettings: () => apiFetch('/crypto/admin/settings'),
+  updateCryptoSettings: (data) =>
+    apiFetch('/crypto/admin/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  getCryptoSettingsHistory: () => apiFetch('/crypto/admin/settings/history'),
+
   // Legacy compatibility
   getConfig: () => apiFetch('/crypto/config'),
   createRequest: (data) => apiFetch('/crypto/request', { method: 'POST', body: JSON.stringify(data) }),
@@ -494,6 +517,7 @@ export const traderService = {
     const query = new URLSearchParams(params).toString();
     return apiFetch(`/trader/notifications${query ? `?${query}` : ''}`);
   },
+  getWalletRate: () => apiFetch('/trader/wallet-rate'),
 };
 
 export const requisiteService = {

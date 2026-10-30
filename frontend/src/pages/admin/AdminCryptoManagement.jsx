@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import jsQR from 'jsqr';
+import { io } from 'socket.io-client';
 import {
   Coins,
   ArrowDownLeft,
@@ -20,10 +21,16 @@ import {
   Clock,
   Trash2,
   ExternalLink,
+  Sliders,
+  Percent,
+  History,
+  AlertCircle,
 } from 'lucide-react';
 import { cryptoService } from '../../services/api';
 import { StatusBadge } from '../../components/StatusBadge';
 import { Modal } from '../../components/Modal';
+
+const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
 
 export const AdminCryptoManagement = () => {
   const [activeTab, setActiveTab] = useState('OVERVIEW');
@@ -63,16 +70,38 @@ export const AdminCryptoManagement = () => {
   const [qrDecoding, setQrDecoding] = useState(false);
   const [uploadingQr, setUploadingQr] = useState(false);
 
+  // Commercial Settings & Rates Management
+  const [cryptoSettings, setCryptoSettings] = useState({
+    usdtRateINR: 105.00,
+    depositBonusPercent: 3.00,
+    withdrawalBonusPercent: 1.00,
+    version: 1,
+  });
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [rateForm, setRateForm] = useState({
+    newRate: '105.00',
+    newDepositBonus: '3.00',
+    newWithdrawalBonus: '1.00',
+    changeReason: '',
+  });
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsSuccess, setSettingsSuccess] = useState('');
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [settingsHistory, setSettingsHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
   const loadData = useCallback(async () => {
     try {
       setRefreshing(true);
-      const [overRes, depRes, wdRes, qrRes, txRes, actRes] = await Promise.all([
+      const [overRes, depRes, wdRes, qrRes, txRes, actRes, settRes] = await Promise.all([
         cryptoService.getAdminOverview().catch(() => null),
         cryptoService.getAdminDeposits().catch(() => null),
         cryptoService.getAdminWithdrawals().catch(() => null),
         cryptoService.getAdminQRs().catch(() => null),
         cryptoService.getAdminTransactions().catch(() => null),
         cryptoService.getAdminActivities().catch(() => null),
+        cryptoService.getCryptoSettings().catch(() => null),
       ]);
 
       if (overRes && overRes.success) setOverview(overRes.data);
@@ -81,6 +110,9 @@ export const AdminCryptoManagement = () => {
       if (qrRes && qrRes.success) setQrs(qrRes.data || []);
       if (txRes && txRes.success) setTransactions(txRes.data || []);
       if (actRes && actRes.success) setActivityLogs(actRes.data || []);
+      if (settRes && settRes.success && settRes.data) {
+        setCryptoSettings(settRes.data);
+      }
     } catch (err) {
       console.error('[Admin Crypto Load Error]:', err);
     } finally {
@@ -91,6 +123,28 @@ export const AdminCryptoManagement = () => {
 
   useEffect(() => {
     loadData();
+
+    // Live Socket.IO listener for real-time rates and commercial settings
+    let socket = null;
+    try {
+      socket = io('/', { transports: ['websocket', 'polling'] });
+      socket.on('crypto_settings_updated', (data) => {
+        if (data) {
+          setCryptoSettings((prev) => ({
+            ...prev,
+            usdtRateINR: data.usdtRateINR !== undefined ? data.usdtRateINR : prev.usdtRateINR,
+            depositBonusPercent: data.depositBonusPercent !== undefined ? data.depositBonusPercent : prev.depositBonusPercent,
+            withdrawalBonusPercent: data.withdrawalBonusPercent !== undefined ? data.withdrawalBonusPercent : prev.withdrawalBonusPercent,
+            version: data.version || prev.version,
+          }));
+        }
+      });
+      socket.on('crypto_rates_updated', () => {
+        loadData();
+      });
+    } catch (err) {
+      console.warn('[Admin Crypto Socket Error]:', err);
+    }
 
     // Live Server-Sent Events (SSE) synchronization for QR updates
     let es = null;
@@ -111,9 +165,91 @@ export const AdminCryptoManagement = () => {
     }
 
     return () => {
+      if (socket) socket.disconnect();
       if (es) es.close();
     };
   }, [loadData]);
+
+  // Commercial Settings Form Actions
+  const handleOpenSettingsModal = () => {
+    setRateForm({
+      newRate: (cryptoSettings.usdtRateINR || 105).toString(),
+      newDepositBonus: (cryptoSettings.depositBonusPercent !== undefined ? cryptoSettings.depositBonusPercent : 3).toString(),
+      newWithdrawalBonus: (cryptoSettings.withdrawalBonusPercent !== undefined ? cryptoSettings.withdrawalBonusPercent : 1).toString(),
+      changeReason: '',
+    });
+    setSettingsError('');
+    setSettingsSuccess('');
+    setSettingsModalOpen(true);
+  };
+
+  const handleSaveSettings = async (e) => {
+    e.preventDefault();
+    setSettingsError('');
+    setSettingsSuccess('');
+
+    const parsedRate = Number(rateForm.newRate);
+    const parsedDepBonus = Number(rateForm.newDepositBonus);
+    const parsedWdBonus = Number(rateForm.newWithdrawalBonus);
+
+    if (isNaN(parsedRate) || parsedRate <= 0) {
+      setSettingsError('Please enter a valid positive USDT rate.');
+      return;
+    }
+    if (parsedRate > 100000) {
+      setSettingsError('USDT rate exceeds maximum limit of 100,000.');
+      return;
+    }
+    if (isNaN(parsedDepBonus) || parsedDepBonus < 0 || parsedDepBonus > 100) {
+      setSettingsError('Deposit bonus percentage must be between 0% and 100%.');
+      return;
+    }
+    if (isNaN(parsedWdBonus) || parsedWdBonus < 0 || parsedWdBonus >= 100) {
+      setSettingsError('Withdrawal bonus percentage must be between 0% and 99.99%.');
+      return;
+    }
+
+    try {
+      setSavingSettings(true);
+      const res = await cryptoService.updateCryptoSettings({
+        usdtRateINR: parsedRate,
+        depositBonusPercent: parsedDepBonus,
+        withdrawalBonusPercent: parsedWdBonus,
+        changeReason: rateForm.changeReason,
+      });
+
+      if (res.success && res.data) {
+        setCryptoSettings(res.data);
+        setSettingsSuccess('Crypto rate & bonus settings published successfully!');
+        setTimeout(() => {
+          setSettingsModalOpen(false);
+          setSettingsSuccess('');
+        }, 1200);
+        loadData();
+      } else {
+        setSettingsError(res.message || 'Failed to update crypto commercial settings.');
+      }
+    } catch (err) {
+      setSettingsError(err.message || 'Failed to update crypto commercial settings.');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleOpenHistoryModal = async () => {
+    try {
+      setLoadingHistory(true);
+      const res = await cryptoService.getCryptoSettingsHistory();
+      if (res.success && res.data) {
+        setSettingsHistory(res.data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch settings history:', err);
+    } finally {
+      setLoadingHistory(false);
+      setHistoryModalOpen(true);
+    }
+  };
 
   // Deposit Actions (Accept with 3% Bonus & Reject with Reason)
   const handleConfirmApproveDeposit = async () => {
@@ -524,27 +660,41 @@ export const AdminCryptoManagement = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Quick Actions & Policy Card */}
             <div className="bg-[#111827] border border-[#1F293D] rounded-2xl p-6 space-y-4">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>Commercial Crypto Rates & Policy</span>
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Commercial Crypto Rates & Policy</span>
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-mono font-bold">
+                  Active v{cryptoSettings.version || 1}
+                </span>
+              </div>
 
               <div className="space-y-2 text-xs font-mono">
                 <div className="p-3 bg-[#0B0F19] rounded-xl flex justify-between items-center">
-                  <span className="text-gray-400">Withdrawal Settlement Base Rate:</span>
-                  <span className="text-white font-bold">1 USDT = ₹105.00 INR</span>
+                  <span className="text-gray-400">Crypto Platform Valuation Rate:</span>
+                  <span className="text-white font-bold">1 USDT = ₹{Number(cryptoSettings.usdtRateINR || 105).toFixed(2)} INR</span>
                 </div>
                 <div className="p-3 bg-[#0B0F19] rounded-xl flex justify-between items-center">
                   <span className="text-gray-400">Crypto Deposit Crediting:</span>
-                  <span className="text-emerald-400 font-bold">+3% Bonus Benefit (1 USDT = ₹105)</span>
+                  <span className="text-emerald-400 font-bold">+{cryptoSettings.depositBonusPercent !== undefined ? cryptoSettings.depositBonusPercent : 3}% Bonus Benefit (1 USDT = ₹{Number(cryptoSettings.usdtRateINR || 105).toFixed(2)})</span>
                 </div>
                 <div className="p-3 bg-[#0B0F19] rounded-xl flex justify-between items-center">
                   <span className="text-gray-400">Crypto Withdrawal Bonus:</span>
-                  <span className="text-purple-400 font-bold">+1% Bonus (99% Debit, 100% Payout)</span>
+                  <span className="text-purple-400 font-bold">+{cryptoSettings.withdrawalBonusPercent !== undefined ? cryptoSettings.withdrawalBonusPercent : 1}% Bonus ({round2(100 - Number(cryptoSettings.withdrawalBonusPercent || 1))}% Debit, 100% Payout)</span>
                 </div>
               </div>
 
               <div className="pt-2 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={handleOpenSettingsModal}
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-all shadow-md shadow-blue-600/20 flex items-center gap-1.5 cursor-pointer"
+                  title="Manage Dynamic Crypto Rate & Bonus Settings"
+                >
+                  <Coins className="w-4 h-4 text-blue-100" />
+                  <span>Manage Crypto Rate & Bonuses</span>
+                </button>
                 <button
                   onClick={() => setActiveTab('DEPOSITS')}
                   className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-all shadow-md shadow-emerald-600/20"
@@ -1642,6 +1792,366 @@ export const AdminCryptoManagement = () => {
           </div>
         </form>
       </Modal>
+
+      {/* 13. MODAL: MANAGE CRYPTO RATE & BONUSES */}
+      {settingsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#111827] border border-[#1F293D] rounded-2xl p-6 w-full max-w-lg shadow-2xl relative space-y-5 animate-in fade-in zoom-in-95 duration-150 my-8">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-[#1F293D]">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-blue-600/10 border border-blue-500/20 text-blue-400">
+                  <Coins className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                    <span>Manage Crypto Rate & Bonuses</span>
+                    <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-mono">
+                      v{cryptoSettings.version || 1}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-gray-400">
+                    Control Platform USDT Rate, Deposit Bonus & Withdrawal Benefit
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSettingsModalOpen(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#1F293D] transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Error & Success alerts */}
+            {settingsError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{settingsError}</span>
+              </div>
+            )}
+            {settingsSuccess && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{settingsSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveSettings} className="space-y-4">
+              {/* Field 1: Crypto USDT Valuation Rate */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[11px] font-semibold text-gray-300 uppercase tracking-wider">
+                    Crypto USDT Platform Rate (₹ / USDT)
+                  </label>
+                  <span className="text-[10px] text-gray-400 font-mono">
+                    Current: ₹{Number(cryptoSettings.usdtRateINR || 105).toFixed(2)}
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400 font-mono text-sm">
+                    ₹
+                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="100000"
+                    required
+                    value={rateForm.newRate}
+                    onChange={(e) => setRateForm({ ...rateForm, newRate: e.target.value })}
+                    placeholder="105.00"
+                    className="w-full bg-[#162032] border border-[#22334F] focus:border-blue-500 rounded-xl pl-8 pr-16 py-2.5 text-sm font-mono font-bold text-white focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                  />
+                  <div className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-xs text-gray-400 font-mono">
+                    / USDT
+                  </div>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Settlement valuation rate for crypto deposits & full withdrawal INR payouts.
+                </p>
+              </div>
+
+              {/* Field 2: Crypto Deposit Bonus % */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[11px] font-semibold text-gray-300 uppercase tracking-wider">
+                    Crypto Deposit Bonus (%)
+                  </label>
+                  <span className="text-[10px] text-emerald-400 font-mono font-bold">
+                    Current: +{cryptoSettings.depositBonusPercent !== undefined ? cryptoSettings.depositBonusPercent : 3}%
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-emerald-400 font-mono text-sm">
+                    +
+                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    required
+                    value={rateForm.newDepositBonus}
+                    onChange={(e) => setRateForm({ ...rateForm, newDepositBonus: e.target.value })}
+                    placeholder="3.00"
+                    className="w-full bg-[#162032] border border-[#22334F] focus:border-emerald-500 rounded-xl pl-8 pr-10 py-2.5 text-sm font-mono font-bold text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-colors"
+                  />
+                  <div className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-xs text-emerald-400 font-mono font-bold">
+                    %
+                  </div>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Bonus credited directly to Trader USDT wallet upon verified deposit (Total Credit = Deposit × (1 + Bonus%)).
+                </p>
+              </div>
+
+              {/* Field 3: Crypto Withdrawal Bonus % */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[11px] font-semibold text-gray-300 uppercase tracking-wider">
+                    Crypto Withdrawal Bonus Benefit (%)
+                  </label>
+                  <span className="text-[10px] text-purple-400 font-mono font-bold">
+                    Current: +{cryptoSettings.withdrawalBonusPercent !== undefined ? cryptoSettings.withdrawalBonusPercent : 1}%
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-purple-400 font-mono text-sm">
+                    +
+                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="99.99"
+                    required
+                    value={rateForm.newWithdrawalBonus}
+                    onChange={(e) => setRateForm({ ...rateForm, newWithdrawalBonus: e.target.value })}
+                    placeholder="1.00"
+                    className="w-full bg-[#162032] border border-[#22334F] focus:border-purple-500 rounded-xl pl-8 pr-10 py-2.5 text-sm font-mono font-bold text-white focus:outline-none focus:ring-1 focus:ring-purple-500 transition-colors"
+                  />
+                  <div className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-xs text-purple-400 font-mono font-bold">
+                    %
+                  </div>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Trader bonus discount on balance debit. E.g. 1% bonus = 99% debit from balance while 100% full payout is issued.
+                </p>
+              </div>
+
+              {/* Field 4: Reason for update */}
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                  Change Reason / Audit Log Note (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={rateForm.changeReason}
+                  onChange={(e) => setRateForm({ ...rateForm, changeReason: e.target.value })}
+                  placeholder="e.g., Weekly commercial rates revision or promotional campaign"
+                  className="w-full bg-[#162032] border border-[#22334F] focus:border-blue-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                />
+              </div>
+
+              {/* Live Preview Box */}
+              {(() => {
+                const previewRate = Number(rateForm.newRate) || 105;
+                const previewDepBonus = Number(rateForm.newDepositBonus) || 0;
+                const previewWdBonus = Number(rateForm.newWithdrawalBonus) || 0;
+
+                // 100 USDT Deposit preview
+                const sampleDepositUsdt = 100;
+                const sampleDepBonusUsdt = round2(sampleDepositUsdt * (previewDepBonus / 100));
+                const sampleDepTotalUsdt = round2(sampleDepositUsdt + sampleDepBonusUsdt);
+                const sampleDepInrEq = round2(sampleDepositUsdt * previewRate);
+
+                // 100 USDT Withdrawal preview
+                const sampleWdUsdt = 100;
+                const sampleWdBonusBenefit = round2(sampleWdUsdt * (previewWdBonus / 100));
+                const sampleWdDebitUsdt = round2(sampleWdUsdt - sampleWdBonusBenefit);
+                const sampleWdPayoutInr = round2(sampleWdUsdt * previewRate);
+
+                return (
+                  <div className="p-3.5 bg-[#0B0F19] rounded-xl border border-[#1F293D] space-y-2.5 text-xs font-mono">
+                    <div className="flex items-center justify-between text-gray-300 font-bold border-b border-[#1F293D] pb-1.5">
+                      <span className="flex items-center gap-1.5">
+                        <Sliders className="w-3.5 h-3.5 text-blue-400" />
+                        <span>Live Calculation Preview</span>
+                      </span>
+                      <span className="text-[10px] text-gray-400">100 USDT Sample</span>
+                    </div>
+
+                    {/* Deposit Preview */}
+                    <div className="p-2 rounded-lg bg-[#111827] border border-emerald-500/20 space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-400 text-[11px]">100 USDT Deposit Credit:</span>
+                        <span className="text-emerald-400 font-bold">
+                          {sampleDepTotalUsdt.toFixed(2)} USDT (+{previewDepBonus}%)
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-gray-400">
+                        <span>Bonus Benefit: +{sampleDepBonusUsdt.toFixed(2)} USDT</span>
+                        <span>INR Eq: ₹{sampleDepInrEq.toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+
+                    {/* Withdrawal Preview */}
+                    <div className="p-2 rounded-lg bg-[#111827] border border-purple-500/20 space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-400 text-[11px]">100 USDT Withdrawal Debit:</span>
+                        <span className="text-purple-400 font-bold">
+                          {sampleWdDebitUsdt.toFixed(2)} USDT ({round2(100 - previewWdBonus)}%)
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-gray-400">
+                        <span>Bonus Benefit: +{sampleWdBonusBenefit.toFixed(2)} USDT</span>
+                        <span className="text-white font-bold">100% Payout: ₹{sampleWdPayoutInr.toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  type="button"
+                  onClick={handleOpenHistoryModal}
+                  className="px-3.5 py-2 rounded-xl bg-[#0B0F19] border border-[#1F293D] hover:bg-[#162032] text-gray-400 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <History className="w-3.5 h-3.5 text-gray-400" />
+                  <span>Audit History</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsModalOpen(false)}
+                    disabled={savingSettings}
+                    className="px-4 py-2.5 rounded-xl border border-[#1F293D] text-gray-400 hover:text-white hover:bg-[#162032] text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingSettings || !rateForm.newRate || Number(rateForm.newRate) <= 0}
+                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-[#1F293D] disabled:text-gray-500 disabled:cursor-not-allowed text-white text-xs font-semibold shadow-lg shadow-blue-600/30 transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    {savingSettings ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Publishing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Save & Publish</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 14. MODAL: SETTINGS AUDIT HISTORY */}
+      {historyModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#111827] border border-[#1F293D] rounded-2xl p-6 w-full max-w-2xl shadow-2xl relative space-y-4 animate-in fade-in zoom-in-95 duration-150 my-8">
+            <div className="flex items-center justify-between pb-3 border-b border-[#1F293D]">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-purple-600/10 border border-purple-500/20 text-purple-400">
+                  <History className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white tracking-tight">
+                    Crypto Commercial Rates & Policy Audit Trail
+                  </h3>
+                  <p className="text-xs text-gray-400">
+                    Chronological ledger of all admin adjustments to crypto rates and bonuses
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryModalOpen(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#1F293D] transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {loadingHistory ? (
+              <div className="py-12 text-center text-gray-400 text-xs flex flex-col items-center gap-2">
+                <RefreshCw className="w-5 h-5 animate-spin text-blue-400" />
+                <span>Loading audit history...</span>
+              </div>
+            ) : settingsHistory.length === 0 ? (
+              <div className="py-12 text-center text-gray-400 text-xs">
+                No past revisions recorded yet.
+              </div>
+            ) : (
+              <div className="max-h-96 overflow-y-auto space-y-2 pr-1">
+                {settingsHistory.map((item, idx) => (
+                  <div
+                    key={item._id || idx}
+                    className="p-3 bg-[#0B0F19] rounded-xl border border-[#1F293D] text-xs font-mono space-y-1.5"
+                  >
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-bold text-[10px]">
+                          v{item.version}
+                        </span>
+                        <span className="text-white font-bold">
+                          ₹{Number(item.usdtRateINR || 105).toFixed(2)} / USDT
+                        </span>
+                        <span className="text-emerald-400 font-bold">
+                          +{item.depositBonusPercent}% Dep
+                        </span>
+                        <span className="text-purple-400 font-bold">
+                          +{item.withdrawalBonusPercent}% Wd
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-gray-500">
+                        {item.timestamp ? new Date(item.timestamp).toLocaleString('en-IN') : 'N/A'}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-gray-400 flex items-center justify-between">
+                      <span>
+                        Prev: ₹{Number(item.previousUsdtRateINR || 105).toFixed(2)} | +{item.previousDepositBonusPercent}% Dep | +{item.previousWithdrawalBonusPercent}% Wd
+                      </span>
+                      <span className="text-gray-400 font-sans text-[10px]">
+                        By: <span className="text-gray-200">{item.updatedByUsername || 'Admin'}</span>
+                      </span>
+                    </div>
+
+                    {item.changeReason && (
+                      <div className="text-[10px] text-gray-400 font-sans italic border-t border-[#1F293D]/60 pt-1">
+                        Reason: {item.changeReason}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="pt-2 flex justify-end border-t border-[#1F293D]">
+              <button
+                type="button"
+                onClick={() => setHistoryModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-[#0B0F19] border border-[#1F293D] hover:bg-[#162032] text-gray-300 text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

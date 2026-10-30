@@ -42,9 +42,12 @@ const {
   getTraderUsdtWallet,
   getTraderUsdtTransactions,
 } = require('../controllers/usdtWalletController');
+const { getWalletValuationRate } = require('../controllers/walletRateController');
 const { getMyNotifications } = require('../controllers/notificationController');
 
 router.get('/wallet/usdt', getTraderUsdtWallet);
+router.get('/wallet-rate', getWalletValuationRate);
+router.get('/wallet/rate', getWalletValuationRate);
 router.get('/wallet/transactions', getTraderUsdtTransactions);
 router.get('/notifications', getMyNotifications);
 
@@ -105,6 +108,15 @@ router.get('/wallet-check/history', getTraderWalletCheckHistory);
 router.post('/wallet-check', createTraderWalletCheck);
 router.get('/wallet-check/:id', getTraderCheckById);
 router.get('/wallet-check/:id/report', getTraderCheckReport);
+
+// Trader Crypto Commercial endpoints
+const { getCryptoSettings, getQuotation } = require('../controllers/cryptoController');
+router.get('/crypto/settings', getCryptoSettings);
+router.get('/crypto/quote', getQuotation);
+router.post('/crypto/quote', (req, res) => {
+  req.query = { ...req.query, ...req.body };
+  return getQuotation(req, res);
+});
 
 module.exports = router;
 

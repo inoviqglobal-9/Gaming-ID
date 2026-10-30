@@ -35,6 +35,10 @@ const {
   getAdminDepositSettings,
   updateAdminDepositSettings,
 } = require('../controllers/depositController');
+const {
+  getWalletValuationRate,
+  updateWalletValuationRate,
+} = require('../controllers/walletRateController');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 // All admin routes require authenticated Admin role
@@ -86,6 +90,11 @@ router.get('/wallet-adjustments', getWalletAdjustments);
 router.post('/wallet-adjustments', createWalletAdjustment);
 router.post('/wallet-adjustments/:id/approve', approveWalletAdjustment);
 router.post('/wallet-adjustments/:id/reject', rejectWalletAdjustment);
+
+// USDT Wallet Valuation Rate Management (Admin controlled)
+router.get('/wallet-rate', getWalletValuationRate);
+router.patch('/wallet-rate', updateWalletValuationRate);
+router.put('/wallet-rate', updateWalletValuationRate);
 
 // Admin Payout Management
 router.get('/payouts', getAllPayoutsAdmin);
@@ -178,7 +187,14 @@ const {
   approveWithdrawal,
   verifyAndCompleteWithdrawal,
   rejectWithdrawal,
+  getCryptoSettings,
+  updateCryptoSettings,
+  getCryptoSettingsHistory,
 } = require('../controllers/cryptoController');
+
+router.get('/crypto/settings', getCryptoSettings);
+router.patch('/crypto/settings', updateCryptoSettings);
+router.get('/crypto/settings/history', getCryptoSettingsHistory);
 
 router.get('/crypto/deposits', getAdminDeposits);
 router.post('/crypto/deposits/:id/approve', approveDeposit);

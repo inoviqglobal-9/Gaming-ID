@@ -26,6 +26,16 @@ const startServer = async () => {
     const { seedDemoTrader } = require('./scripts/seedTrader');
     await seedDemoTrader();
 
+    // Ensure Wallet Valuation Rate configuration exists without overwriting existing Admin configured rate
+    const WalletRateConfig = require('./models/WalletRateConfig');
+    const activeRate = await WalletRateConfig.getActiveRate();
+    console.log(`[Rate Config] Active USDT Valuation Rate: ₹${activeRate.rateINRPerUSDT}/USDT (v${activeRate.version})`);
+
+    // Ensure Crypto Commercial Settings configuration exists without overwriting existing Admin configured settings
+    const CryptoCommercialSettings = require('./models/CryptoCommercialSettings');
+    const activeCryptoSettings = await CryptoCommercialSettings.getSettings();
+    console.log(`[Crypto Commercial] Active Crypto USDT Rate: ₹${activeCryptoSettings.usdtRateINR}/USDT, Deposit Bonus: +${activeCryptoSettings.depositBonusPercent}%, Withdrawal Bonus: +${activeCryptoSettings.withdrawalBonusPercent}% (v${activeCryptoSettings.version})`);
+
     const server = http.createServer(app);
     initSocket(server, config.clientOrigin);
 

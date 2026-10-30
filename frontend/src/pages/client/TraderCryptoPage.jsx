@@ -25,6 +25,8 @@ import { cryptoService, traderService } from '../../services/api';
 import { StatusBadge } from '../../components/StatusBadge';
 import { Modal } from '../../components/Modal';
 
+const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
+
 export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) => {
   const { user } = useAuth();
   // Determine active tab based on route or state
@@ -121,6 +123,22 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
         socket.on('balance_update', () => {
           loadData();
         });
+        socket.on('crypto_settings_updated', (data) => {
+          if (data) {
+            setRates((prev) => ({
+              ...prev,
+              baseRate: data.usdtRateINR !== undefined ? data.usdtRateINR : prev.baseRate,
+              depositBonusPercent: data.depositBonusPercent !== undefined ? data.depositBonusPercent : prev.depositBonusPercent,
+              withdrawalBonusPercent: data.withdrawalBonusPercent !== undefined ? data.withdrawalBonusPercent : prev.withdrawalBonusPercent,
+              effectiveDepositRate: data.usdtRateINR !== undefined ? data.usdtRateINR : prev.effectiveDepositRate,
+              effectiveWithdrawalRate: data.usdtRateINR !== undefined ? data.usdtRateINR : prev.effectiveWithdrawalRate,
+            }));
+          }
+          loadData();
+        });
+        socket.on('crypto_rates_updated', () => {
+          loadData();
+        });
       } catch (err) {
         console.warn('[Trader Socket.IO Error]:', err);
       }
@@ -177,20 +195,20 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
     setTimeout(() => setCopiedText(''), 2000);
   };
 
-  // Calculations for Deposit Live Calculator (Dynamic User Amount + 3% Automatic Platform Bonus)
+  // Calculations for Deposit Live Calculator (Dynamic User Amount + Dynamic Platform Bonus)
   const numDep = parseFloat(depositAmount) || 0;
   const fixedRate = Number(rates.baseRate || 105.0);
-  const depBonusPercent = 3.0;
-  const depBonusAmountUsdt = Math.round((numDep * 0.03) * 1000000) / 1000000;
-  const depExpectedCreditUsdt = Math.round((numDep * 1.03) * 1000000) / 1000000;
+  const depBonusPercent = Number(rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3.0);
+  const depBonusAmountUsdt = Math.round((numDep * (depBonusPercent / 100)) * 1000000) / 1000000;
+  const depExpectedCreditUsdt = Math.round((numDep + depBonusAmountUsdt) * 1000000) / 1000000;
   const depInrEquivalent = Math.round((numDep * fixedRate) * 100) / 100;
 
-  // Calculations for Withdrawal Live Calculator (+1% Platform Bonus)
+  // Calculations for Withdrawal Live Calculator (Dynamic Platform Bonus)
   const numWd = parseFloat(withdrawalAmount) || 0;
-  const wdBonusPercent = Number(rates.withdrawalBonusPercent || 1.0);
+  const wdBonusPercent = Number(rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1.0);
   const wdBonusUsdt = Math.round((numWd * (wdBonusPercent / 100)) * 1000000) / 1000000;
   const wdDebitUsdt = Math.round((numWd - wdBonusUsdt) * 1000000) / 1000000;
-  const wdFinalPayout = Math.round(numWd * rates.baseRate * 100) / 100;
+  const wdFinalPayout = Math.round(numWd * fixedRate * 100) / 100;
   const availBal = parseFloat(wallet?.availableBalance || 0);
   const hasSufficientBalance = availBal >= wdDebitUsdt;
 
@@ -244,7 +262,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
       const res = await cryptoService.submitDeposit(formData);
       if (res.success) {
         setDepositSuccessMsg(
-          `Deposit request ${res.data.requestId} submitted for ${numDep} USDT. You will receive ${depExpectedCreditUsdt.toFixed(2)} USDT (${numDep} USDT + 3% bonus: ${depBonusAmountUsdt.toFixed(2)} USDT) upon Admin verification.`
+          `Deposit request ${res.data.requestId} submitted for ${numDep} USDT. You will receive ${depExpectedCreditUsdt.toFixed(2)} USDT (${numDep} USDT + ${depBonusPercent}% bonus: ${depBonusAmountUsdt.toFixed(2)} USDT) upon Admin verification.`
         );
         setDepositAmount('');
         setDepositTxHash('');
@@ -268,7 +286,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
     }
     const currentAvail = parseFloat(wallet?.availableBalance || 0);
     if (currentAvail < wdDebitUsdt) {
-      alert(`Insufficient available USDT balance. Available: ${currentAvail.toFixed(2)} USDT, Required balance debit: ${wdDebitUsdt.toFixed(2)} USDT (99% of ${numWd} USDT with +1% bonus).`);
+      alert(`Insufficient available USDT balance. Available: ${currentAvail.toFixed(2)} USDT, Required balance debit: ${wdDebitUsdt.toFixed(2)} USDT (${round2(100 - wdBonusPercent)}% of ${numWd} USDT with +${wdBonusPercent}% bonus).`);
       return;
     }
     if (!withdrawalQrFile && (!withdrawalUpiId || !withdrawalUpiId.trim())) {
@@ -287,7 +305,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
       const res = await cryptoService.submitWithdrawal(formData);
       if (res.success) {
         setWithdrawalSuccessMsg(
-          `Withdrawal request ${res.data.requestId} submitted for ${numWd} USDT. Only ${wdDebitUsdt.toFixed(2)} USDT debited from balance (+1% Bonus Benefit: +${wdBonusUsdt.toFixed(2)} USDT). Full payout obligation: ₹${wdFinalPayout.toLocaleString('en-IN')}.`
+          `Withdrawal request ${res.data.requestId} submitted for ${numWd} USDT. Only ${wdDebitUsdt.toFixed(2)} USDT debited from balance (+${wdBonusPercent}% Bonus Benefit: +${wdBonusUsdt.toFixed(2)} USDT). Full payout obligation: ₹${wdFinalPayout.toLocaleString('en-IN')}.`
         );
         setWithdrawalAmount('');
         setWithdrawalUpiId('');
@@ -312,14 +330,14 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
             <h1 className="text-2xl font-bold text-white tracking-tight">CRYPTO MANAGEMENT</h1>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            Enterprise USDT Transfers: TRC20 Deposits (Fixed ₹105 Rate) & Crypto Withdrawals (+1% Bonus).
+            Enterprise USDT Transfers: TRC20 Deposits (Fixed ₹{rates.baseRate || 105} Rate) & Crypto Withdrawals (+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% Bonus).
           </p>
         </div>
 
         <div className="flex items-center gap-2.5">
           <div className="px-3 py-1.5 rounded-xl bg-purple-600/10 border border-purple-500/20 text-purple-400 text-xs font-mono font-bold flex items-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
-            <span>Fixed Platform Rate: ₹{rates.baseRate || 105} / USDT</span>
+            <span>Platform USDT Rate: ₹{rates.baseRate || 105} / USDT</span>
           </div>
 
           <button
@@ -366,30 +384,30 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
         {/* Fixed Platform Rate Card */}
         <div className="bg-[#111827] border border-blue-500/20 rounded-2xl p-5 shadow-lg relative overflow-hidden">
           <div className="flex items-center justify-between text-xs text-blue-400 mb-2">
-            <span className="font-semibold uppercase tracking-wider text-[11px]">Fixed USDT Rate</span>
+            <span className="font-semibold uppercase tracking-wider text-[11px]">Platform USDT Rate</span>
             <ArrowDownLeft className="w-4 h-4 text-blue-400" />
           </div>
           <div className="text-2xl font-extrabold text-white font-mono flex items-baseline gap-2">
             <span>₹{rates.baseRate || 105} / USDT</span>
-            <span className="text-xs font-normal text-blue-400 font-sans">Fixed Rate</span>
+            <span className="text-xs font-normal text-blue-400 font-sans">Active Rate</span>
           </div>
           <div className="mt-2 text-[11px] text-gray-400">
-            Deposits receive +3% bonus (e.g. 100 USDT deposit = 103 USDT credited)
+            Deposits receive +{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% bonus (e.g. 100 USDT deposit = {round2(100 * (1 + Number(rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3)/100))} USDT credited)
           </div>
         </div>
 
         {/* Withdrawal Bonus Card */}
         <div className="bg-[#111827] border border-purple-500/20 rounded-2xl p-5 shadow-lg relative overflow-hidden">
           <div className="flex items-center justify-between text-xs text-purple-400 mb-2">
-            <span className="font-semibold uppercase tracking-wider text-[11px]">Withdrawal Bonus (+1%)</span>
+            <span className="font-semibold uppercase tracking-wider text-[11px]">Withdrawal Bonus (+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}%)</span>
             <Gift className="w-4 h-4 text-purple-400" />
           </div>
           <div className="text-2xl font-extrabold text-white font-mono flex items-baseline gap-2">
-            <span>+1% Bonus</span>
+            <span>+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% Bonus</span>
             <span className="text-xs font-normal text-purple-400 font-sans">0% Fee</span>
           </div>
           <div className="mt-2 text-[11px] text-gray-400">
-            Get 100% full payout while only 99% USDT balance is debited
+            Get 100% full payout while only {round2(100 - Number(rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1))}% USDT balance is debited
           </div>
         </div>
       </div>
@@ -422,7 +440,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
           }`}
         >
           <ArrowDownLeft className="w-3.5 h-3.5" />
-          <span>Crypto Deposit (+3% Bonus)</span>
+          <span>Crypto Deposit (+{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% Bonus)</span>
         </button>
 
         <button
@@ -437,7 +455,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
           }`}
         >
           <ArrowUpRight className="w-3.5 h-3.5" />
-          <span>Crypto Withdrawal (+1% Bonus)</span>
+          <span>Crypto Withdrawal (+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% Bonus)</span>
         </button>
 
         <button
@@ -462,9 +480,9 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 <ArrowDownLeft className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Crypto Deposit (+3% Bonus)</h3>
+                <h3 className="text-lg font-bold text-white">Crypto Deposit (+{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% Bonus)</h3>
                 <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                  Deposit USDT directly via TRC20 blockchain transfer with an automatic +3% platform bonus benefit upon Admin approval and fixed platform valuation at ₹105 / USDT.
+                  Deposit USDT directly via TRC20 blockchain transfer with an automatic +{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% platform bonus benefit upon Admin approval and platform valuation at ₹{rates.baseRate || 105} / USDT.
                 </p>
               </div>
 
@@ -474,16 +492,16 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   <span className="text-white">Dynamic User Choice</span>
                 </div>
                 <div className="flex justify-between text-blue-400">
-                  <span>Fixed Platform Rate:</span>
-                  <span>₹105 / USDT</span>
+                  <span>Platform USDT Rate:</span>
+                  <span>₹{rates.baseRate || 105} / USDT</span>
                 </div>
                 <div className="flex justify-between text-purple-400">
-                  <span>Deposit Bonus (3%):</span>
-                  <span className="font-bold">+3% Platform Benefit</span>
+                  <span>Deposit Bonus ({rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}%):</span>
+                  <span className="font-bold">+{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% Platform Benefit</span>
                 </div>
                 <div className="flex justify-between text-emerald-400 font-bold border-t border-[#1F293D] pt-1">
                   <span>Total USDT Credited:</span>
-                  <span>103% of Deposit Amount</span>
+                  <span>{100 + Number(rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3)}% of Deposit Amount</span>
                 </div>
               </div>
 
@@ -494,7 +512,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 }}
                 className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2"
               >
-                <span>Proceed to Crypto Deposit (+3% Bonus)</span>
+                <span>Proceed to Crypto Deposit (+{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% Bonus)</span>
                 <ArrowDownLeft className="w-4 h-4" />
               </button>
             </div>
@@ -505,24 +523,24 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 <Gift className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Crypto Withdrawal (+1% Bonus)</h3>
+                <h3 className="text-lg font-bold text-white">Crypto Withdrawal (+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% Bonus)</h3>
                 <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                  Withdraw USDT directly to your PhonePe / UPI with a +1% platform bonus benefit. You receive 100% full payout for only 99% balance debited.
+                  Withdraw USDT directly to your PhonePe / UPI with a +{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% platform bonus benefit. You receive 100% full payout for only {round2(100 - Number(rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1))}% balance debited.
                 </p>
               </div>
 
               <div className="p-3 bg-[#0B0F19] border border-[#1F293D] rounded-xl space-y-1.5 text-xs font-mono">
                 <div className="flex justify-between text-gray-400">
                   <span>Base Rate:</span>
-                  <span className="text-white">₹105 / USDT</span>
+                  <span className="text-white">₹{rates.baseRate || 105} / USDT</span>
                 </div>
                 <div className="flex justify-between text-purple-400">
-                  <span>Bonus Benefit (1%):</span>
-                  <span>+1% Platform Benefit</span>
+                  <span>Bonus Benefit ({rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}%):</span>
+                  <span>+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% Platform Benefit</span>
                 </div>
                 <div className="flex justify-between text-gray-400">
                   <span>Actual USDT Balance Debit:</span>
-                  <span className="text-amber-400 font-bold">99% of Request</span>
+                  <span className="text-amber-400 font-bold">{round2(100 - Number(rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1))}% of Request</span>
                 </div>
                 <div className="flex justify-between text-emerald-400 font-bold border-t border-[#1F293D] pt-1">
                   <span>Full Payout Obligation:</span>
@@ -537,7 +555,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 }}
                 className="w-full py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs transition-all shadow-lg shadow-purple-600/20 flex items-center justify-center gap-2"
               >
-                <span>Proceed to Crypto Withdrawal (+1% Bonus)</span>
+                <span>Proceed to Crypto Withdrawal (+{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% Bonus)</span>
                 <ArrowUpRight className="w-4 h-4" />
               </button>
             </div>
@@ -549,7 +567,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
             <div>
               <strong className="block text-white font-semibold">Crypto Policy:</strong>
               <span>
-                All crypto deposits receive a +3% platform bonus upon Admin verification at the fixed platform rate of ₹105 / USDT (e.g. 100 USDT deposit = 103 USDT credited; 500 = 515; 1000 = 1030). Ensure you send exact USDT on TRON (TRC20) and supply your valid TXID. Crypto withdrawals enjoy a +1% platform bonus with 100% full payout obligation.
+                All crypto deposits receive a +{rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3}% platform bonus upon Admin verification at the platform rate of ₹{rates.baseRate || 105} / USDT (e.g. 100 USDT deposit = {round2(100 * (1 + Number(rates.depositBonusPercent !== undefined ? rates.depositBonusPercent : 3)/100))} USDT credited). Ensure you send exact USDT on TRON (TRC20) and supply your valid TXID. Crypto withdrawals enjoy a +{rates.withdrawalBonusPercent !== undefined ? rates.withdrawalBonusPercent : 1}% platform bonus with 100% full payout obligation.
               </span>
             </div>
           </div>
@@ -567,7 +585,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 <span>CREATE CRYPTO DEPOSIT REQUEST</span>
               </h2>
               <p className="text-xs text-gray-400 mt-1">
-                Enter any custom USDT amount to view real-time crediting and INR equivalent at the fixed ₹105 rate. Transfer exact USDT to the official TRC20 wallet and provide your TXID.
+                Enter any custom USDT amount to view real-time crediting and INR equivalent at the platform ₹{fixedRate} rate. Transfer exact USDT to the official TRC20 wallet and provide your TXID.
               </p>
             </div>
 
@@ -604,7 +622,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 </p>
               </div>
 
-              {/* Dynamic 3% Bonus Live Calculation Card */}
+              {/* Dynamic Bonus Live Calculation Card */}
               <div className="p-4 bg-[#0B0F19] border border-[#1F293D] rounded-xl space-y-2.5 text-xs font-mono shadow-inner">
                 <div className="flex justify-between text-gray-300">
                   <span>Deposit Amount:</span>
@@ -619,13 +637,13 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   </span>
                 </div>
                 <div className="flex justify-between text-purple-400">
-                  <span>Deposit Bonus (+3%):</span>
+                  <span>Deposit Bonus (+{depBonusPercent}%):</span>
                   <span className="font-bold text-sm">
                     +{numDep > 0 ? depBonusAmountUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
                   </span>
                 </div>
                 <div className="flex justify-between text-emerald-400 border-t border-[#1F293D] pt-2 font-bold text-sm">
-                  <span>Total Wallet Credit (103%):</span>
+                  <span>Total Wallet Credit ({100 + depBonusPercent}%):</span>
                   <span className="text-emerald-400 font-bold text-base">
                     {numDep > 0 ? depExpectedCreditUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
                   </span>
@@ -637,7 +655,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   </span>
                 </div>
                 <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 leading-relaxed font-sans mt-1">
-                  <strong>3% Deposit Bonus:</strong> You receive 103% of your verified USDT deposit credited to your balance upon Admin verification (+3% bonus funded by platform). Platform conversion rate is fixed at ₹{fixedRate} / USDT.
+                  <strong>+{depBonusPercent}% Deposit Bonus:</strong> You receive {100 + depBonusPercent}% of your verified USDT deposit credited to your balance upon Admin verification (+{depBonusPercent}% bonus funded by platform). Platform conversion rate is ₹{fixedRate} / USDT.
                 </div>
               </div>
 
@@ -747,7 +765,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                     : submittingDeposit
                     ? 'Submitting Deposit Request...'
                     : numDep > 0
-                    ? `Submit Deposit Request (+3% Bonus: Credit ${depExpectedCreditUsdt.toFixed(2)} USDT)`
+                    ? `Submit Deposit Request (+${depBonusPercent}% Bonus: Credit ${depExpectedCreditUsdt.toFixed(2)} USDT)`
                     : 'Enter an Amount to Submit Deposit'}
                 </span>
               </button>
@@ -823,7 +841,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 </div>
 
                 <div className="flex justify-between items-center text-purple-400 border-t border-[#1F293D] pt-2 font-semibold">
-                  <span>Deposit Bonus (+3%):</span>
+                  <span>Deposit Bonus (+{depBonusPercent}%):</span>
                   <span className="font-mono text-sm">
                     +{numDep > 0 ? depBonusAmountUsdt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '0.00'} USDT
                   </span>
@@ -859,11 +877,11 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
             <div className="flex items-center gap-2">
               <Gift className="w-5 h-5 text-purple-400" />
               <h2 className="text-lg font-bold text-white tracking-tight">
-                Crypto Withdrawal (+1% Bonus)
+                Crypto Withdrawal (+{wdBonusPercent}% Bonus)
               </h2>
             </div>
             <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-              Select a fixed USDT withdrawal amount. Receive <strong className="text-white">100% full payout obligation</strong> (₹{rates.baseRate}/USDT), while only <strong className="text-purple-400">99% is debited</strong> from your crypto balance. The 1% bonus is platform-funded benefit!
+              Select a fixed USDT withdrawal amount. Receive <strong className="text-white">100% full payout obligation</strong> (₹{rates.baseRate}/USDT), while only <strong className="text-purple-400">{round2(100 - wdBonusPercent)}% is debited</strong> from your crypto balance. The {wdBonusPercent}% bonus is platform-funded benefit!
             </p>
           </div>
 
@@ -932,7 +950,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
               </p>
             </div>
 
-            {/* Task 3: Automatic 1% Bonus Calculation Card */}
+            {/* Task 3: Automatic Dynamic Bonus Calculation Card */}
             {numWd > 0 && (
               <div className="p-4 bg-[#0B0F19] border border-purple-500/30 rounded-xl space-y-2.5 text-xs font-mono shadow-inner">
                 <div className="flex justify-between text-gray-400">
@@ -942,7 +960,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                 <div className="flex justify-between text-purple-400">
                   <span className="flex items-center gap-1.5">
                     <Gift className="w-3.5 h-3.5 text-purple-400" />
-                    Withdrawal Bonus (+1%):
+                    Withdrawal Bonus (+{wdBonusPercent}%):
                   </span>
                   <span className="font-bold">+{wdBonusUsdt.toFixed(6)} USDT</span>
                 </div>
@@ -957,7 +975,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   </span>
                 </div>
                 <div className="p-2.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-[11px] text-purple-300 leading-relaxed font-sans mt-1">
-                  <strong>Platform-Funded Benefit:</strong> You receive the full requested payout of ₹{wdFinalPayout.toLocaleString('en-IN')}, while only {wdDebitUsdt.toFixed(2)} USDT (99%) is debited from your platform crypto balance.
+                  <strong>Platform-Funded Benefit:</strong> You receive the full requested payout of ₹{wdFinalPayout.toLocaleString('en-IN')}, while only {wdDebitUsdt.toFixed(2)} USDT ({round2(100 - wdBonusPercent)}%) is debited from your platform crypto balance.
                 </div>
               </div>
             )}
@@ -967,7 +985,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
               <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
                 <span>
-                  Insufficient available balance. You need at least <strong>{wdDebitUsdt.toFixed(2)} USDT</strong> available (99% balance debit). Your available balance is <strong>{availBal.toFixed(2)} USDT</strong>.
+                  Insufficient available balance. You need at least <strong>{wdDebitUsdt.toFixed(2)} USDT</strong> available ({round2(100 - wdBonusPercent)}% balance debit). Your available balance is <strong>{availBal.toFixed(2)} USDT</strong>.
                 </span>
               </div>
             )}
@@ -1077,7 +1095,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
               <ArrowUpRight className="w-4 h-4" />
               <span>
                 {submittingWithdrawal
-                  ? 'Reserving 99% USDT & Submitting...'
+                  ? `Reserving ${round2(100 - wdBonusPercent)}% USDT & Submitting...`
                   : numWd > 0
                   ? `Submit Withdrawal (Receive Full ₹${wdFinalPayout.toLocaleString('en-IN')})`
                   : 'Select an Amount to Withdraw'}
@@ -1125,20 +1143,22 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                   transactions.map((tx) => {
                     const isWd = tx.transactionType === 'WITHDRAWAL';
                     const numAmt = tx.depositAmountUSDT || tx.requestedUSDT || tx.usdtAmount || 0;
+                    const itemBonusPercent = tx.bonusPercent !== undefined ? tx.bonusPercent : (isWd ? 1.0 : 3.0);
+                    const itemDebitPercent = isWd ? round2(100 - itemBonusPercent) : 100;
                     const bonusUsdt = tx.bonusUSDT !== undefined
                       ? tx.bonusUSDT
                       : (tx.bonusAmountUSDT !== undefined
                         ? tx.bonusAmountUSDT
-                        : (isWd ? Math.round(numAmt * 0.01 * 1000000) / 1000000 : Math.round(numAmt * 0.03 * 1000000) / 1000000));
+                        : (isWd ? Math.round(numAmt * (itemBonusPercent / 100) * 1000000) / 1000000 : Math.round(numAmt * (itemBonusPercent / 100) * 1000000) / 1000000));
                     const debitUsdt = tx.balanceDebitUSDT !== undefined
                       ? tx.balanceDebitUSDT
-                      : (isWd ? Math.round(numAmt * 0.99 * 1000000) / 1000000 : numAmt);
+                      : (isWd ? Math.round(numAmt * (itemDebitPercent / 100) * 1000000) / 1000000 : numAmt);
                     const creditUsdt = tx.totalCreditUSDT !== undefined
                       ? tx.totalCreditUSDT
                       : (tx.creditedAmountUSDT !== undefined
                         ? tx.creditedAmountUSDT
-                        : (isWd ? 0 : Math.round(numAmt * 1.03 * 1000000) / 1000000));
-                    const inrVal = tx.inrEquivalent !== undefined ? tx.inrEquivalent : Math.round(numAmt * (tx.fixedRate || 105) * 100) / 100;
+                        : (isWd ? 0 : Math.round(numAmt * (1 + itemBonusPercent / 100) * 1000000) / 1000000));
+                    const inrVal = tx.inrEquivalent !== undefined ? tx.inrEquivalent : Math.round(numAmt * (tx.fixedRate || tx.baseRate || 105) * 100) / 100;
 
                     return (
                       <tr key={tx._id} className="hover:bg-[#151D2F]">
@@ -1156,17 +1176,17 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                         <td className="p-4 font-mono">
                           {isWd ? (
                             <span className="text-purple-400 font-bold">
-                              +1% Bonus (+{bonusUsdt.toFixed(2)} USDT)
+                              +{itemBonusPercent}% Bonus (+{bonusUsdt.toFixed(2)} USDT)
                             </span>
                           ) : (
                             <span className="text-emerald-400 font-bold">
-                              +3% Bonus (+{bonusUsdt.toFixed(2)} USDT)
+                              +{itemBonusPercent}% Bonus (+{bonusUsdt.toFixed(2)} USDT)
                             </span>
                           )}
                         </td>
                         <td className="p-4 font-mono">
                           {isWd ? (
-                            <span className="text-amber-300 font-bold">-{debitUsdt.toFixed(2)} USDT (99% Debit)</span>
+                            <span className="text-amber-300 font-bold">-{debitUsdt.toFixed(2)} USDT ({itemDebitPercent}% Debit)</span>
                           ) : (
                             <span className="text-emerald-400 font-bold">
                               {tx.status === 'COMPLETED' ? `+${creditUsdt.toFixed(2)} USDT (Credited)` : `+${creditUsdt.toFixed(2)} USDT (Pending)`}
@@ -1212,17 +1232,20 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
           {(() => {
             const isDep = selectedTx.transactionType === 'DEPOSIT';
             const numAmt = selectedTx.depositAmountUSDT || selectedTx.requestedUSDT || selectedTx.usdtAmount || 0;
+            const snapBonusPercent = selectedTx.bonusPercent !== undefined ? selectedTx.bonusPercent : (isDep ? 3.0 : 1.0);
+            const snapDebitPercent = isDep ? 100 : round2(100 - snapBonusPercent);
+            const snapRate = selectedTx.fixedRate || selectedTx.baseRate || 105;
             const bonusAmt = selectedTx.bonusUSDT !== undefined
               ? selectedTx.bonusUSDT
               : (selectedTx.bonusAmountUSDT !== undefined
                 ? selectedTx.bonusAmountUSDT
-                : (isDep ? Math.round(numAmt * 0.03 * 1000000) / 1000000 : Math.round(numAmt * 0.01 * 1000000) / 1000000));
+                : (isDep ? Math.round(numAmt * (snapBonusPercent / 100) * 1000000) / 1000000 : Math.round(numAmt * (snapBonusPercent / 100) * 1000000) / 1000000));
             const credAmt = selectedTx.totalCreditUSDT !== undefined && selectedTx.totalCreditUSDT > 0
               ? selectedTx.totalCreditUSDT
-              : Math.round(numAmt * 1.03 * 1000000) / 1000000;
+              : Math.round(numAmt * (1 + snapBonusPercent / 100) * 1000000) / 1000000;
             const inrVal = selectedTx.inrEquivalent !== undefined
               ? selectedTx.inrEquivalent
-              : Math.round(numAmt * (selectedTx.fixedRate || 105) * 100) / 100;
+              : Math.round(numAmt * snapRate * 100) / 100;
 
             return (
               <div className="space-y-4 text-xs font-mono">
@@ -1237,7 +1260,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                       Your Crypto Deposit Request has been submitted successfully and is waiting for Admin verification.
                     </p>
                     <p className="text-[10px] text-gray-400">
-                      No balance has been credited yet. Upon verification, your deposit and +3% bonus will be credited to your USDT wallet.
+                      No balance has been credited yet. Upon verification, your deposit and +{snapBonusPercent}% bonus will be credited to your USDT wallet.
                     </p>
                   </div>
                 )}
@@ -1249,7 +1272,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                       <span>Deposit Request Approved</span>
                     </div>
                     <p className="text-[11px] text-gray-300">
-                      Your Crypto Deposit Request has been approved. Your deposit amount and 3% bonus have been successfully credited to your USDT wallet.
+                      Your Crypto Deposit Request has been approved. Your deposit amount and {snapBonusPercent}% bonus have been successfully credited to your USDT wallet.
                     </p>
                     <div className="space-y-1 text-[11px] text-gray-300 bg-[#0B0F19] p-2.5 rounded-lg border border-[#1F293D]">
                       <div className="flex justify-between">
@@ -1257,7 +1280,7 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                         <span className="text-white font-bold font-mono">{numAmt.toFixed(2)} USDT</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>Bonus (3%):</span>
+                        <span>Bonus ({snapBonusPercent}%):</span>
                         <span className="text-emerald-400 font-bold font-mono">+{bonusAmt.toFixed(2)} USDT</span>
                       </div>
                       <div className="flex justify-between font-bold text-emerald-300 border-t border-[#1F293D] pt-1">
@@ -1319,22 +1342,22 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                     <div>
                       <span className="text-gray-400 block text-[11px]">Actual Balance Debit</span>
                       <span className="text-amber-300 font-bold">
-                        {(selectedTx.balanceDebitUSDT || selectedTx.usdtAmount * 0.99).toFixed(2)} USDT (99%)
+                        {(selectedTx.balanceDebitUSDT !== undefined ? selectedTx.balanceDebitUSDT : selectedTx.usdtAmount * (snapDebitPercent / 100)).toFixed(2)} USDT ({snapDebitPercent}%)
                       </span>
                     </div>
                   ) : (
                     <div>
-                      <span className="text-gray-400 block text-[11px]">3% Deposit Bonus</span>
+                      <span className="text-gray-400 block text-[11px]">{snapBonusPercent}% Deposit Bonus</span>
                       <span className="text-emerald-400 font-bold">
-                        +{bonusAmt.toFixed(2)} USDT (+3%)
+                        +{bonusAmt.toFixed(2)} USDT (+{snapBonusPercent}%)
                       </span>
                     </div>
                   )}
                   {!isDep ? (
                     <div>
-                      <span className="text-gray-400 block text-[11px]">1% Platform Bonus</span>
+                      <span className="text-gray-400 block text-[11px]">{snapBonusPercent}% Platform Bonus</span>
                       <span className="text-purple-400 font-bold">
-                        +{(selectedTx.bonusUSDT || selectedTx.usdtAmount * 0.01).toFixed(2)} USDT Benefit
+                        +{(selectedTx.bonusUSDT !== undefined ? selectedTx.bonusUSDT : selectedTx.usdtAmount * (snapBonusPercent / 100)).toFixed(2)} USDT Benefit
                       </span>
                     </div>
                   ) : (
@@ -1346,14 +1369,14 @@ export const TraderCryptoPage = ({ navigate, currentRoute = '/trader/crypto' }) 
                     </div>
                   )}
                   <div>
-                    <span className="text-gray-400 block text-[11px]">Fixed Platform Rate</span>
+                    <span className="text-gray-400 block text-[11px]">Platform Rate</span>
                     <span className="text-blue-400 font-bold">
-                      ₹{selectedTx.fixedRate || 105} / USDT
+                      ₹{snapRate} / USDT
                     </span>
                   </div>
                   <div>
                     <span className="text-gray-400 block text-[11px]">
-                      {isDep ? 'INR Equivalent (at ₹105)' : 'Full INR Payout'}
+                      {isDep ? `INR Equivalent (at ₹${snapRate})` : 'Full INR Payout'}
                     </span>
                     <span className="text-emerald-400 font-bold">
                       {isDep

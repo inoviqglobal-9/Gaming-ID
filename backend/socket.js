@@ -39,9 +39,17 @@ const emitDepositStatusUpdate = (traderId, data) => {
   }
 };
 
+const emitCryptoSettingsUpdate = (settings) => {
+  if (io) {
+    io.emit('crypto_settings_updated', settings);
+    io.emit('crypto_rates_updated', settings);
+  }
+};
+
 module.exports = {
   initSocket,
   getIO,
   emitDepositStatusUpdate,
+  emitCryptoSettingsUpdate,
 };
 
