@@ -30,7 +30,10 @@ app.use(
 // CORS allowlist configuration
 app.use(
   cors({
-    origin: config.clientOrigin,
+    origin: config.clientOrigin
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
